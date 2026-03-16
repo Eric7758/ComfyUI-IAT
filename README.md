@@ -36,6 +36,13 @@ ComfyUI custom nodes for image/text workflows:
 - `Qwen Translator by IAT`
 - `QwenKontextTranslator by IAT`
 
+### Qwen3.5 (New)
+- `Qwen3.5 Prompt Enhancer by IAT`
+- `Qwen3.5 Reverse Prompt by IAT`
+
+Qwen3.5 nodes support selectable sizes from 0.8B to 35B.
+If the selected model does not exist locally, it is downloaded automatically from ModelScope to `ComfyUI/models/LLM`.
+
 ## Installation
 
 ### Method 1: ComfyUI-Manager
