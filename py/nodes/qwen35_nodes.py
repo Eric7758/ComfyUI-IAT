@@ -1,9 +1,10 @@
 import gc
 from pathlib import Path
 
-import numpy as np
 import torch
 from PIL import Image
+from packaging import version
+import transformers
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
 try:
@@ -24,30 +25,46 @@ except Exception:
 import folder_paths
 
 
-QWEN35_MODELS = {
+QWEN35_TEXT_MODELS = {
+    "Qwen3.5-0.8B": ["Qwen/Qwen3.5-0.8B-Instruct", "Qwen/Qwen3.5-0.8B"],
+    "Qwen3.5-2B": ["Qwen/Qwen3.5-2B-Instruct", "Qwen/Qwen3.5-2B"],
+    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B-Instruct", "Qwen/Qwen3.5-4B"],
+    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B-Instruct", "Qwen/Qwen3.5-9B"],
+    "Qwen3.5-27B": ["Qwen/Qwen3.5-27B-Instruct", "Qwen/Qwen3.5-27B"],
+    "Qwen3.5-35B": ["Qwen/Qwen3.5-35B-A3B-Instruct", "Qwen/Qwen3.5-35B-A3B"],
+}
+
+# Reverse prompt needs VL checkpoint. Prefer Qwen3.5-VL, fallback to older VL family.
+QWEN35_VL_MODELS = {
     "Qwen3.5-0.8B": [
-        "Qwen/Qwen3.5-0.8B-Instruct",
-        "Qwen/Qwen3.5-0.8B",
+        "Qwen/Qwen3.5-VL-0.8B-Instruct",
+        "Qwen/Qwen3-VL-2B-Instruct",
+        "Qwen/Qwen2.5-VL-3B-Instruct",
     ],
     "Qwen3.5-2B": [
-        "Qwen/Qwen3.5-2B-Instruct",
-        "Qwen/Qwen3.5-2B",
+        "Qwen/Qwen3.5-VL-2B-Instruct",
+        "Qwen/Qwen3-VL-2B-Instruct",
+        "Qwen/Qwen2.5-VL-3B-Instruct",
     ],
     "Qwen3.5-4B": [
-        "Qwen/Qwen3.5-4B-Instruct",
-        "Qwen/Qwen3.5-4B",
+        "Qwen/Qwen3.5-VL-4B-Instruct",
+        "Qwen/Qwen3-VL-4B-Instruct",
+        "Qwen/Qwen2.5-VL-7B-Instruct",
     ],
     "Qwen3.5-9B": [
-        "Qwen/Qwen3.5-9B-Instruct",
-        "Qwen/Qwen3.5-9B",
+        "Qwen/Qwen3.5-VL-9B-Instruct",
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "Qwen/Qwen2.5-VL-7B-Instruct",
     ],
     "Qwen3.5-27B": [
-        "Qwen/Qwen3.5-27B-Instruct",
-        "Qwen/Qwen3.5-27B",
+        "Qwen/Qwen3.5-VL-27B-Instruct",
+        "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        "Qwen/Qwen2.5-VL-32B-Instruct",
     ],
     "Qwen3.5-35B": [
-        "Qwen/Qwen3.5-35B-A3B-Instruct",
-        "Qwen/Qwen3.5-35B-A3B",
+        "Qwen/Qwen3.5-VL-35B-Instruct",
+        "Qwen/Qwen3-VL-30B-A3B-Instruct",
+        "Qwen/Qwen2.5-VL-72B-Instruct",
     ],
 }
 
@@ -72,15 +89,14 @@ _MODEL_CACHE = {
     "vl": {"model": None, "tokenizer": None, "processor": None, "signature": None},
 }
 
+MIN_TRANSFORMERS_FOR_QWEN35 = "4.57.0"
+
 
 def _get_llm_dir() -> Path:
     llm_paths = []
     if hasattr(folder_paths, "folder_names_and_paths") and "LLM" in folder_paths.folder_names_and_paths:
         llm_paths = folder_paths.get_folder_paths("LLM")
-    if llm_paths:
-        llm_dir = Path(llm_paths[0])
-    else:
-        llm_dir = Path(folder_paths.models_dir) / "LLM"
+    llm_dir = Path(llm_paths[0]) if llm_paths else Path(folder_paths.models_dir) / "LLM"
     llm_dir.mkdir(parents=True, exist_ok=True)
     return llm_dir
 
@@ -90,25 +106,18 @@ def _model_local_dir(repo_id: str) -> Path:
 
 
 def _has_weights(model_dir: Path) -> bool:
-    patterns = ("*.safetensors", "*.bin", "*.pt")
-    return any(model_dir.glob(pattern) for pattern in patterns)
+    return any(model_dir.glob(p) for p in ("*.safetensors", "*.bin", "*.pt"))
 
 
 def _download_from_modelscope(repo_id: str, local_dir: Path) -> Path:
     local_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        ms_snapshot_download(
-            model_id=repo_id,
-            local_dir=str(local_dir),
-            local_dir_use_symlinks=False,
-        )
-    except TypeError:
-        ms_snapshot_download(repo_id, cache_dir=str(local_dir.parent))
+    ms_snapshot_download(model_id=repo_id, local_dir=str(local_dir), local_dir_use_symlinks=False)
     return local_dir
 
 
-def _ensure_model(model_name: str) -> Path:
-    candidates = QWEN35_MODELS.get(model_name)
+def _ensure_model(model_name: str, mode: str) -> Path:
+    model_map = QWEN35_TEXT_MODELS if mode == "text" else QWEN35_VL_MODELS
+    candidates = model_map.get(model_name)
     if not candidates:
         raise ValueError(f"[IAT] Unsupported Qwen3.5 model: {model_name}")
 
@@ -116,6 +125,8 @@ def _ensure_model(model_name: str) -> Path:
     for repo_id in candidates:
         target = _model_local_dir(repo_id)
         if target.exists() and _has_weights(target):
+            if repo_id != candidates[0]:
+                print(f"[IAT] Using fallback model: {repo_id}")
             return target
         try:
             downloaded = _download_from_modelscope(repo_id, target)
@@ -125,7 +136,12 @@ def _ensure_model(model_name: str) -> Path:
         except Exception as exc:
             last_error = exc
             print(f"[IAT] ModelScope download failed for {repo_id}: {exc}")
-    raise RuntimeError(f"[IAT] Unable to download model {model_name} from ModelScope: {last_error}")
+
+    raise RuntimeError(
+        f"[IAT] Unable to fetch {mode} model for {model_name}. "
+        f"Please verify ModelScope access and transformers version (>={MIN_TRANSFORMERS_FOR_QWEN35}). "
+        f"Last error: {last_error}"
+    )
 
 
 def _resolve_device(device: str) -> str:
@@ -143,11 +159,7 @@ def _resolve_device(device: str) -> str:
 
 
 def _dtype_for_device(device: str):
-    if device == "cuda":
-        return torch.float16
-    if device == "mps":
-        return torch.float16
-    return torch.float32
+    return torch.float16 if device in {"cuda", "mps"} else torch.float32
 
 
 def _quant_config(quantization: str):
@@ -176,10 +188,15 @@ def _apply_chat_template(tokenizer, messages):
             enable_thinking=False,
         )
     except TypeError:
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+
+def _check_transformers_support():
+    current = getattr(transformers, "__version__", "0.0.0")
+    if version.parse(current) < version.parse(MIN_TRANSFORMERS_FOR_QWEN35):
+        raise RuntimeError(
+            f"[IAT] transformers>={MIN_TRANSFORMERS_FOR_QWEN35} is required for Qwen3.5. "
+            f"Current version: {current}. Please upgrade and restart ComfyUI."
         )
 
 
@@ -193,7 +210,8 @@ def _clear_cache(kind: str):
 
 
 def _load_text_model(model_name: str, quantization: str, device: str):
-    model_dir = _ensure_model(model_name)
+    _check_transformers_support()
+    model_dir = _ensure_model(model_name, mode="text")
     run_device = _resolve_device(device)
     signature = (str(model_dir), quantization, run_device)
     cache = _MODEL_CACHE["text"]
@@ -221,7 +239,8 @@ def _load_text_model(model_name: str, quantization: str, device: str):
 
 
 def _load_vl_model(model_name: str, quantization: str, device: str):
-    model_dir = _ensure_model(model_name)
+    _check_transformers_support()
+    model_dir = _ensure_model(model_name, mode="vl")
     run_device = _resolve_device(device)
     signature = (str(model_dir), quantization, run_device)
     cache = _MODEL_CACHE["vl"]
@@ -239,7 +258,15 @@ def _load_vl_model(model_name: str, quantization: str, device: str):
             load_kwargs["device_map"] = "auto"
     else:
         load_kwargs["torch_dtype"] = _dtype_for_device(run_device)
-    model = AutoModelForVision2Seq.from_pretrained(str(model_dir), **load_kwargs).eval()
+
+    try:
+        model = AutoModelForVision2Seq.from_pretrained(str(model_dir), **load_kwargs).eval()
+    except Exception as exc:
+        raise RuntimeError(
+            "[IAT] Failed to load VL model. This is usually caused by an old transformers build. "
+            f"Please upgrade to transformers>={MIN_TRANSFORMERS_FOR_QWEN35}. Original error: {exc}"
+        )
+
     if qcfg is None:
         model.to(run_device)
 
@@ -255,8 +282,8 @@ def _tensor_to_pil(image):
         return None
     if image.dim() == 4:
         image = image[0]
-    np_img = (image.cpu().numpy() * 255.0).clip(0, 255).astype(np.uint8)
-    return Image.fromarray(np_img)
+    array = (image.cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
+    return Image.fromarray(array)
 
 
 class Qwen35PromptEnhancerNode:
@@ -264,7 +291,7 @@ class Qwen35PromptEnhancerNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model_name": (list(QWEN35_MODELS.keys()), {"default": "Qwen3.5-4B"}),
+                "model_name": (list(QWEN35_TEXT_MODELS.keys()), {"default": "Qwen3.5-4B"}),
                 "quantization": (QUANT_OPTIONS, {"default": "None (FP16/BF16)"}),
                 "device": (DEVICE_OPTIONS, {"default": "auto"}),
                 "prompt_text": ("STRING", {"default": "", "multiline": True}),
@@ -303,25 +330,23 @@ class Qwen35PromptEnhancerNode:
         model, tokenizer, run_device = _load_text_model(model_name, quantization, device)
         system_prompt = custom_system_prompt.strip() or PROMPT_STYLES.get(enhancement_style, PROMPT_STYLES["Enhance"])
         user_prompt = (prompt_text or "").strip() or "Describe a cinematic scene in rich visual detail."
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
         prompt = _apply_chat_template(tokenizer, messages)
+
         model_inputs = tokenizer([prompt], return_tensors="pt")
         model_device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device(run_device)
         model_inputs = {k: v.to(model_device) if torch.is_tensor(v) else v for k, v in model_inputs.items()}
 
-        generate_kwargs = {
-            "max_new_tokens": max_tokens,
-            "repetition_penalty": repetition_penalty,
-            "do_sample": temperature > 0,
-            "temperature": max(temperature, 1e-5),
-            "top_p": top_p,
-            "pad_token_id": tokenizer.eos_token_id,
-            "eos_token_id": tokenizer.eos_token_id,
-        }
-        output_ids = model.generate(**model_inputs, **generate_kwargs)
+        output_ids = model.generate(
+            **model_inputs,
+            max_new_tokens=max_tokens,
+            repetition_penalty=repetition_penalty,
+            do_sample=temperature > 0,
+            temperature=max(temperature, 1e-5),
+            top_p=top_p,
+            pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
         generated = output_ids[0][model_inputs["input_ids"].shape[-1] :]
         text = tokenizer.decode(generated, skip_special_tokens=True).strip()
 
@@ -335,7 +360,7 @@ class Qwen35ReversePromptNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model_name": (list(QWEN35_MODELS.keys()), {"default": "Qwen3.5-4B"}),
+                "model_name": (list(QWEN35_VL_MODELS.keys()), {"default": "Qwen3.5-4B"}),
                 "quantization": (QUANT_OPTIONS, {"default": "None (FP16/BF16)"}),
                 "device": (DEVICE_OPTIONS, {"default": "auto"}),
                 "preset_prompt": (list(REVERSE_PRESETS.keys()), {"default": "Detailed Description"}),
@@ -347,9 +372,7 @@ class Qwen35ReversePromptNode:
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
                 "seed": ("INT", {"default": 1, "min": 1, "max": 2**32 - 1}),
             },
-            "optional": {
-                "image": ("IMAGE",),
-            },
+            "optional": {"image": ("IMAGE",)},
         }
 
     RETURN_TYPES = ("STRING",)
@@ -391,19 +414,20 @@ class Qwen35ReversePromptNode:
         ]
         chat = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
         processed = processor(text=chat, images=[pil_image], return_tensors="pt")
+
         model_device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device(run_device)
         model_inputs = {k: v.to(model_device) if torch.is_tensor(v) else v for k, v in processed.items()}
 
-        generate_kwargs = {
-            "max_new_tokens": max_tokens,
-            "repetition_penalty": repetition_penalty,
-            "do_sample": temperature > 0,
-            "temperature": max(temperature, 1e-5),
-            "top_p": top_p,
-            "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
-            "eos_token_id": tokenizer.eos_token_id,
-        }
-        output_ids = model.generate(**model_inputs, **generate_kwargs)
+        output_ids = model.generate(
+            **model_inputs,
+            max_new_tokens=max_tokens,
+            repetition_penalty=repetition_penalty,
+            do_sample=temperature > 0,
+            temperature=max(temperature, 1e-5),
+            top_p=top_p,
+            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
         input_len = model_inputs["input_ids"].shape[-1]
         generated = output_ids[0][input_len:]
         text = tokenizer.decode(generated, skip_special_tokens=True).strip()
@@ -422,6 +446,3 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Qwen35PromptEnhancer by IAT": "Qwen3.5 Prompt Enhancer by IAT",
     "Qwen35ReversePrompt by IAT": "Qwen3.5 Reverse Prompt by IAT",
 }
-
-
-

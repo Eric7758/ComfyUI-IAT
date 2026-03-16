@@ -86,3 +86,4 @@ Edit `config.yaml`:
 
 - Implementation code is placed under `py/` to avoid collisions with ComfyUI's top-level `nodes.py` module.
 - Chat template calls disable thinking mode when tokenizer supports it, to keep node output clean.
+- Qwen3.5 nodes require `transformers>=4.57.0` in the ComfyUI runtime environment.
