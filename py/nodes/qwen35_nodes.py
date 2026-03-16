@@ -109,6 +109,16 @@ def _has_weights(model_dir: Path) -> bool:
     return any(model_dir.glob(p) for p in ("*.safetensors", "*.bin", "*.pt"))
 
 
+def _has_vl_processor_files(model_dir: Path) -> bool:
+    required_any = (
+        "processor_config.json",
+        "preprocessor_config.json",
+        "image_processor_config.json",
+        "feature_extractor_config.json",
+    )
+    return any((model_dir / name).exists() for name in required_any)
+
+
 def _download_from_modelscope(repo_id: str, local_dir: Path) -> Path:
     local_dir.mkdir(parents=True, exist_ok=True)
     ms_snapshot_download(model_id=repo_id, local_dir=str(local_dir), local_dir_use_symlinks=False)
@@ -125,12 +135,19 @@ def _ensure_model(model_name: str, mode: str) -> Path:
     for repo_id in candidates:
         target = _model_local_dir(repo_id)
         if target.exists() and _has_weights(target):
+            if mode == "vl" and not _has_vl_processor_files(target):
+                print(f"[IAT] Skip invalid VL model directory (missing processor files): {target}")
+                continue
             if repo_id != candidates[0]:
                 print(f"[IAT] Using fallback model: {repo_id}")
             return target
+
         try:
             downloaded = _download_from_modelscope(repo_id, target)
             if _has_weights(downloaded):
+                if mode == "vl" and not _has_vl_processor_files(downloaded):
+                    print(f"[IAT] Downloaded model lacks VL processor files, fallback to next candidate: {repo_id}")
+                    continue
                 print(f"[IAT] Downloaded model from ModelScope: {repo_id}")
                 return downloaded
         except Exception as exc:
@@ -142,8 +159,6 @@ def _ensure_model(model_name: str, mode: str) -> Path:
         f"Please verify ModelScope access and transformers version (>={MIN_TRANSFORMERS_FOR_QWEN35}). "
         f"Last error: {last_error}"
     )
-
-
 def _resolve_device(device: str) -> str:
     if device == "auto":
         if torch.cuda.is_available():
@@ -446,3 +461,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Qwen35PromptEnhancer by IAT": "Qwen3.5 Prompt Enhancer by IAT",
     "Qwen35ReversePrompt by IAT": "Qwen3.5 Reverse Prompt by IAT",
 }
+
