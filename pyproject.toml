@@ -1,0 +1,17 @@
+[project]
+name = "comfyui-iat"
+description = "ComfyUI-IAT: Image & Text utilities with Qwen translator and prompt optimizer."
+version = "1.0.0"
+license = { text = "MIT" }
+dependencies = [
+  "transformers>=4.52.0",
+  "torch>=2.0.0",
+  "Pillow>=9.0.0",
+  "numpy>=1.21.0",
+  "PyYAML>=6.0",
+]
+
+[tool.comfy]
+PublisherId = "eric7758"
+DisplayName = "ComfyUI-IAT"
+Icon = ""
