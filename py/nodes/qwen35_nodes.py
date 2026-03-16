@@ -121,7 +121,12 @@ def _has_vl_processor_files(model_dir: Path) -> bool:
 
 def _download_from_modelscope(repo_id: str, local_dir: Path) -> Path:
     local_dir.mkdir(parents=True, exist_ok=True)
-    ms_snapshot_download(model_id=repo_id, local_dir=str(local_dir), local_dir_use_symlinks=False)
+    # Newer ModelScope versions deprecated `local_dir_use_symlinks`.
+    try:
+        ms_snapshot_download(model_id=repo_id, local_dir=str(local_dir))
+    except TypeError:
+        # Backward compatibility for older client signatures.
+        ms_snapshot_download(repo_id, cache_dir=str(local_dir.parent))
     return local_dir
 
 
@@ -461,4 +466,3 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Qwen35PromptEnhancer by IAT": "Qwen3.5 Prompt Enhancer by IAT",
     "Qwen35ReversePrompt by IAT": "Qwen3.5 Reverse Prompt by IAT",
 }
-
