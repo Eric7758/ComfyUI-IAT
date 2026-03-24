@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -235,6 +236,25 @@ def apply_chat_template(tokenizer, messages) -> str:
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
+def apply_vl_chat_template(processor, conversation) -> str:
+    try:
+        return processor.apply_chat_template(
+            conversation,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+    except TypeError:
+        return processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
+
+
+def _strip_thinking_content(text: str) -> str:
+    if not text:
+        return text
+    text = re.sub(r"<think>[\\s\\S]*?</think>", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
 def _load_tokenizer(model_dir: Path):
     try:
         return AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
@@ -383,7 +403,7 @@ def generate_vision_text(
     content.append({"type": "text", "text": text_prompt})
 
     conversation = [{"role": "user", "content": content}]
-    chat = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
+    chat = apply_vl_chat_template(processor, conversation)
     processed = processor(text=chat, images=images, return_tensors="pt")
 
     model_device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device(run_device)
@@ -401,6 +421,8 @@ def generate_vision_text(
     )
     generated = output_ids[0][model_inputs["input_ids"].shape[-1] :]
     return tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+
 
 
 
