@@ -54,23 +54,23 @@ TEXT_MODEL_CANDIDATES: Dict[str, List[str]] = {
 
 VL_MODEL_CANDIDATES: Dict[str, List[str]] = {
     "Qwen3.5-Latest": [
-        "Qwen/Qwen3.5-VL-35B-Instruct",
-        "Qwen/Qwen3.5-VL-27B-Instruct",
-        "Qwen/Qwen3.5-VL-9B-Instruct",
-        "Qwen/Qwen3.5-VL-4B-Instruct",
-        "Qwen/Qwen3.5-VL-2B-Instruct",
-        "Qwen/Qwen3.5-VL-0.8B-Instruct",
+        "Qwen/Qwen3.5-VL-35B",
+        "Qwen/Qwen3.5-VL-27B",
+        "Qwen/Qwen3.5-VL-9B",
+        "Qwen/Qwen3.5-VL-4B",
+        "Qwen/Qwen3.5-VL-2B",
+        "Qwen/Qwen3.5-VL-0.8B",
         "Qwen/Qwen3-VL-8B-Instruct",
         "Qwen/Qwen2.5-VL-7B-Instruct",
     ],
     "Qwen3.5-0.8B": [
-        "Qwen/Qwen3.5-VL-0.8B-Instruct",
+        "Qwen/Qwen3.5-VL-0.8B",
         "Qwen/Qwen3-VL-2B-Instruct",
         "Qwen/Qwen2.5-VL-3B-Instruct",
     ],
-    "Qwen3.5-9B": ["Qwen/Qwen3.5-VL-9B-Instruct", "Qwen/Qwen3-VL-8B-Instruct"],
-    "Qwen3.5-4B": ["Qwen/Qwen3.5-VL-4B-Instruct", "Qwen/Qwen3-VL-4B-Instruct"],
-    "Qwen3.5-2B": ["Qwen/Qwen3.5-VL-2B-Instruct", "Qwen/Qwen3-VL-2B-Instruct"],
+    "Qwen3.5-9B": ["Qwen/Qwen3.5-VL-9B", "Qwen/Qwen3-VL-8B-Instruct"],
+    "Qwen3.5-4B": ["Qwen/Qwen3.5-VL-4B", "Qwen/Qwen3-VL-4B-Instruct"],
+    "Qwen3.5-2B": ["Qwen/Qwen3.5-VL-2B", "Qwen/Qwen3-VL-2B-Instruct"],
 }
 
 QUANT_OPTIONS = ["None (FP16/BF16)", "8-bit", "4-bit"]
@@ -405,6 +405,7 @@ def generate_vision_text(
     )
     generated = output_ids[0][model_inputs["input_ids"].shape[-1] :]
     return tokenizer.decode(generated, skip_special_tokens=True).strip()
+
 
 
 
