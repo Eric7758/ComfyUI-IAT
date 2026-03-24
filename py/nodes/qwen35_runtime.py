@@ -39,17 +39,17 @@ MIN_TRANSFORMERS_FOR_QWEN35 = "4.57.0"
 # "Latest" points to newest Qwen3.5 first, then gracefully falls back.
 TEXT_MODEL_CANDIDATES: Dict[str, List[str]] = {
     "Qwen3.5-Latest": [
-        "Qwen/Qwen3.5-35B-A3B-Instruct",
-        "Qwen/Qwen3.5-27B-Instruct",
-        "Qwen/Qwen3.5-9B-Instruct",
-        "Qwen/Qwen3.5-4B-Instruct",
-        "Qwen/Qwen3.5-2B-Instruct",
-        "Qwen/Qwen3.5-0.8B-Instruct",
+        "Qwen/Qwen3.5-35B-A3B",
+        "Qwen/Qwen3.5-27B",
+        "Qwen/Qwen3.5-9B",
+        "Qwen/Qwen3.5-4B",
+        "Qwen/Qwen3.5-2B",
+        "Qwen/Qwen3.5-0.8B",
     ],
-    "Qwen3.5-0.8B": ["Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-0.8B-Instruct"],
-    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B-Instruct", "Qwen/Qwen3.5-9B"],
-    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B-Instruct", "Qwen/Qwen3.5-4B"],
-    "Qwen3.5-2B": ["Qwen/Qwen3.5-2B-Instruct", "Qwen/Qwen3.5-2B"],
+    "Qwen3.5-0.8B": ["Qwen/Qwen3.5-0.8B"],
+    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B"],
+    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B"],
+    "Qwen3.5-2B": ["Qwen/Qwen3.5-2B"],
 }
 
 VL_MODEL_CANDIDATES: Dict[str, List[str]] = {
@@ -100,8 +100,15 @@ def _get_llm_dir() -> Path:
     return llm_dir
 
 
+def _normalize_local_name(repo_id: str) -> str:
+    name = repo_id.split("/")[-1]
+    if name.endswith("-Instruct"):
+        name = name[: -len("-Instruct")]
+    return name
+
+
 def _model_local_dir(repo_id: str) -> Path:
-    return _get_llm_dir() / repo_id.split("/")[-1]
+    return _get_llm_dir() / _normalize_local_name(repo_id)
 
 
 def _has_weights(model_dir: Path) -> bool:
@@ -398,6 +405,7 @@ def generate_vision_text(
     )
     generated = output_ids[0][model_inputs["input_ids"].shape[-1] :]
     return tokenizer.decode(generated, skip_special_tokens=True).strip()
+
 
 
 
