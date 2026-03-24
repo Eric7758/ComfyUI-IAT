@@ -1,7 +1,6 @@
 import re
 import sys
 
-import torch
 from PIL import Image
 
 from .qwen35_runtime import (
@@ -43,13 +42,24 @@ Rules:
 """
 
 
-def _tensor_to_pil(image):
+def _tensor_to_pil_list(image):
     if image is None:
-        return None
-    if image.dim() == 4:
-        image = image[0]
-    array = (image.cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
-    return Image.fromarray(array)
+        return []
+    if image.dim() == 3:
+        image = image.unsqueeze(0)
+
+    pil_images = []
+    for i in range(image.shape[0]):
+        array = (image[i].cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
+        pil_images.append(Image.fromarray(array))
+    return pil_images
+
+
+def _collect_pil_images(*image_inputs):
+    merged = []
+    for img in image_inputs:
+        merged.extend(_tensor_to_pil_list(img))
+    return merged
 
 
 def _detect_language(text: str):
@@ -140,7 +150,12 @@ class Qwen35ReversePromptNode:
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
                 "seed": ("INT", {"default": 1, "min": 1, "max": 2**32 - 1}),
             },
-            "optional": {"image": ("IMAGE",)},
+            "optional": {
+                "image": ("IMAGE",),
+                "image_2": ("IMAGE",),
+                "image_3": ("IMAGE",),
+                "image_4": ("IMAGE",),
+            },
         }
 
     RETURN_TYPES = ("STRING",)
@@ -162,18 +177,21 @@ class Qwen35ReversePromptNode:
         keep_model_loaded,
         seed,
         image=None,
+        image_2=None,
+        image_3=None,
+        image_4=None,
     ):
-        if image is None:
-            return ("[IAT] Please connect an IMAGE input for reverse prompt.",)
+        pil_images = _collect_pil_images(image, image_2, image_3, image_4)
+        if len(pil_images) == 0:
+            return ("[IAT] Please connect at least one IMAGE input for reverse prompt.",)
 
         text_prompt = (custom_prompt or "").strip() or REVERSE_PRESETS.get(preset_prompt, REVERSE_PRESETS["Detailed Description"])
-        pil_image = _tensor_to_pil(image)
 
         text = generate_vision_text(
             variant=model_variant,
             quantization=quantization,
             device=device,
-            image=pil_image,
+            images=pil_images,
             text_prompt=text_prompt,
             max_tokens=max_tokens,
             temperature=temperature,
@@ -192,7 +210,7 @@ class QwenTranslatorNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "text": ("STRING", {"multiline": True, "default": "请输入要翻译的文本"}),
+                "text": ("STRING", {"multiline": True, "default": "Please input text to translate."}),
                 "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else "Qwen3.5-Latest"}),
                 "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
                 "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
@@ -245,7 +263,7 @@ class QwenKontextTranslatorNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "text": ("STRING", {"multiline": True, "default": "请输入要优化的编辑指令"}),
+                "text": ("STRING", {"multiline": True, "default": "Please input editing instruction."}),
                 "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else "Qwen3.5-Latest"}),
                 "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
                 "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),

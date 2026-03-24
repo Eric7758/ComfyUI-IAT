@@ -53,24 +53,19 @@ TEXT_MODEL_CANDIDATES: Dict[str, List[str]] = {
 }
 
 VL_MODEL_CANDIDATES: Dict[str, List[str]] = {
+    # Qwen3.5 is a unified multimodal family. Do not fall back to Qwen3-VL/Qwen2.5-VL.
     "Qwen3.5-Latest": [
-        "Qwen/Qwen3.5-VL-35B",
-        "Qwen/Qwen3.5-VL-27B",
-        "Qwen/Qwen3.5-VL-9B",
-        "Qwen/Qwen3.5-VL-4B",
-        "Qwen/Qwen3.5-VL-2B",
-        "Qwen/Qwen3.5-VL-0.8B",
-        "Qwen/Qwen3-VL-8B-Instruct",
-        "Qwen/Qwen2.5-VL-7B-Instruct",
+        "Qwen/Qwen3.5-35B-A3B",
+        "Qwen/Qwen3.5-27B",
+        "Qwen/Qwen3.5-9B",
+        "Qwen/Qwen3.5-4B",
+        "Qwen/Qwen3.5-2B",
+        "Qwen/Qwen3.5-0.8B",
     ],
-    "Qwen3.5-0.8B": [
-        "Qwen/Qwen3.5-VL-0.8B",
-        "Qwen/Qwen3-VL-2B-Instruct",
-        "Qwen/Qwen2.5-VL-3B-Instruct",
-    ],
-    "Qwen3.5-9B": ["Qwen/Qwen3.5-VL-9B", "Qwen/Qwen3-VL-8B-Instruct"],
-    "Qwen3.5-4B": ["Qwen/Qwen3.5-VL-4B", "Qwen/Qwen3-VL-4B-Instruct"],
-    "Qwen3.5-2B": ["Qwen/Qwen3.5-VL-2B", "Qwen/Qwen3-VL-2B-Instruct"],
+    "Qwen3.5-0.8B": ["Qwen/Qwen3.5-0.8B"],
+    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B"],
+    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B"],
+    "Qwen3.5-2B": ["Qwen/Qwen3.5-2B"],
 }
 
 QUANT_OPTIONS = ["None (FP16/BF16)", "8-bit", "4-bit"]
@@ -367,7 +362,7 @@ def generate_vision_text(
     variant: str,
     quantization: str,
     device: str,
-    image,
+    images,
     text_prompt: str,
     max_tokens: int,
     temperature: float,
@@ -378,17 +373,18 @@ def generate_vision_text(
     torch.manual_seed(seed)
     model, tokenizer, processor, run_device = load_vl_model(variant, quantization, device)
 
-    conversation = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": text_prompt},
-            ],
-        }
-    ]
+    if not isinstance(images, list):
+        images = [images]
+    images = [img for img in images if img is not None]
+    if len(images) == 0:
+        raise ValueError("[IAT] generate_vision_text requires at least one image.")
+
+    content = [{"type": "image", "image": img} for img in images]
+    content.append({"type": "text", "text": text_prompt})
+
+    conversation = [{"role": "user", "content": content}]
     chat = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
-    processed = processor(text=chat, images=[image], return_tensors="pt")
+    processed = processor(text=chat, images=images, return_tensors="pt")
 
     model_device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device(run_device)
     model_inputs = {k: v.to(model_device) if torch.is_tensor(v) else v for k, v in processed.items()}
@@ -405,6 +401,8 @@ def generate_vision_text(
     )
     generated = output_ids[0][model_inputs["input_ids"].shape[-1] :]
     return tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+
 
 
 
