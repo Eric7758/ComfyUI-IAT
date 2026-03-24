@@ -1,6 +1,7 @@
 model:
-  qwen_path: "models/LLM/Qwen3.5-4B"
-  device: "cuda"  # "cuda", "cpu", or "auto"
+  default_variant: "Qwen3.5-Latest"
+  quantization: "None (FP16/BF16)"
+  device: "auto"  # auto / cuda / cpu / mps
 
 logging:
   verbose: false

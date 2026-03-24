@@ -1,75 +1,24 @@
-import gc
-from pathlib import Path
+import re
+import sys
 
 import torch
 from PIL import Image
-from packaging import version
-import transformers
-from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
-try:
-    from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
-except ImportError:
-    from transformers import AutoModelForVision2Seq
+from .qwen35_runtime import (
+    DEVICE_OPTIONS,
+    QUANT_OPTIONS,
+    TEXT_MODEL_CANDIDATES,
+    VL_MODEL_CANDIDATES,
+    generate_text,
+    generate_vision_text,
+    unload_all_models,
+)
 
-try:
-    from transformers import BitsAndBytesConfig
-except Exception:
-    BitsAndBytesConfig = None
-
-try:
-    from modelscope.hub.snapshot_download import snapshot_download as ms_snapshot_download
-except Exception:
-    from modelscope import snapshot_download as ms_snapshot_download
-
-import folder_paths
-
-
-QWEN35_TEXT_MODELS = {
-    "Qwen3.5-0.8B": ["Qwen/Qwen3.5-0.8B-Instruct", "Qwen/Qwen3.5-0.8B"],
-    "Qwen3.5-2B": ["Qwen/Qwen3.5-2B-Instruct", "Qwen/Qwen3.5-2B"],
-    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B-Instruct", "Qwen/Qwen3.5-4B"],
-    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B-Instruct", "Qwen/Qwen3.5-9B"],
-    "Qwen3.5-27B": ["Qwen/Qwen3.5-27B-Instruct", "Qwen/Qwen3.5-27B"],
-    "Qwen3.5-35B": ["Qwen/Qwen3.5-35B-A3B-Instruct", "Qwen/Qwen3.5-35B-A3B"],
-}
-
-# Reverse prompt needs VL checkpoint. Prefer Qwen3.5-VL, fallback to older VL family.
-QWEN35_VL_MODELS = {
-    "Qwen3.5-0.8B": [
-        "Qwen/Qwen3.5-VL-0.8B-Instruct",
-        "Qwen/Qwen3-VL-2B-Instruct",
-        "Qwen/Qwen2.5-VL-3B-Instruct",
-    ],
-    "Qwen3.5-2B": [
-        "Qwen/Qwen3.5-VL-2B-Instruct",
-        "Qwen/Qwen3-VL-2B-Instruct",
-        "Qwen/Qwen2.5-VL-3B-Instruct",
-    ],
-    "Qwen3.5-4B": [
-        "Qwen/Qwen3.5-VL-4B-Instruct",
-        "Qwen/Qwen3-VL-4B-Instruct",
-        "Qwen/Qwen2.5-VL-7B-Instruct",
-    ],
-    "Qwen3.5-9B": [
-        "Qwen/Qwen3.5-VL-9B-Instruct",
-        "Qwen/Qwen3-VL-8B-Instruct",
-        "Qwen/Qwen2.5-VL-7B-Instruct",
-    ],
-    "Qwen3.5-27B": [
-        "Qwen/Qwen3.5-VL-27B-Instruct",
-        "Qwen/Qwen3-VL-30B-A3B-Instruct",
-        "Qwen/Qwen2.5-VL-32B-Instruct",
-    ],
-    "Qwen3.5-35B": [
-        "Qwen/Qwen3.5-VL-35B-Instruct",
-        "Qwen/Qwen3-VL-30B-A3B-Instruct",
-        "Qwen/Qwen2.5-VL-72B-Instruct",
-    ],
-}
-
-QUANT_OPTIONS = ["None (FP16/BF16)", "8-bit", "4-bit"]
-DEVICE_OPTIONS = ["auto", "cuda", "cpu", "mps"]
+_CFG = getattr(sys.modules.get("comfyui_iat_config"), "data", {}) or {}
+_MODEL_CFG = (_CFG.get("model") or {}) if isinstance(_CFG, dict) else {}
+_DEFAULT_VARIANT = _MODEL_CFG.get("default_variant", "Qwen3.5-Latest")
+_DEFAULT_QUANT = _MODEL_CFG.get("quantization", "None (FP16/BF16)")
+_DEFAULT_DEVICE = _MODEL_CFG.get("device", "auto")
 
 PROMPT_STYLES = {
     "Enhance": "Expand and enrich this prompt with vivid details while keeping the original intent.",
@@ -79,222 +28,19 @@ PROMPT_STYLES = {
 }
 
 REVERSE_PRESETS = {
-    "Detailed Description": "Describe this image in detail. Output a high-quality image generation prompt in English only.",
-    "Prompt Reverse": "Infer a compact, production-grade positive prompt from this image. English only.",
+    "Detailed Description": "Describe this image in detail and output an English image generation prompt only.",
+    "Prompt Reverse": "Infer a compact production-grade positive prompt from this image. English only.",
     "Style Focus": "Describe style, camera, lighting, color, composition, and materials as a reusable generation prompt.",
 }
 
-_MODEL_CACHE = {
-    "text": {"model": None, "tokenizer": None, "signature": None},
-    "vl": {"model": None, "tokenizer": None, "processor": None, "signature": None},
-}
-
-MIN_TRANSFORMERS_FOR_QWEN35 = "4.57.0"
-
-
-def _get_llm_dir() -> Path:
-    llm_paths = []
-    if hasattr(folder_paths, "folder_names_and_paths") and "LLM" in folder_paths.folder_names_and_paths:
-        llm_paths = folder_paths.get_folder_paths("LLM")
-    llm_dir = Path(llm_paths[0]) if llm_paths else Path(folder_paths.models_dir) / "LLM"
-    llm_dir.mkdir(parents=True, exist_ok=True)
-    return llm_dir
-
-
-def _model_local_dir(repo_id: str) -> Path:
-    return _get_llm_dir() / repo_id.split("/")[-1]
-
-
-def _has_weights(model_dir: Path) -> bool:
-    return any(model_dir.glob(p) for p in ("*.safetensors", "*.bin", "*.pt"))
-
-
-def _has_vl_processor_files(model_dir: Path) -> bool:
-    required_any = (
-        "processor_config.json",
-        "preprocessor_config.json",
-        "image_processor_config.json",
-        "feature_extractor_config.json",
-    )
-    return any((model_dir / name).exists() for name in required_any)
-
-
-def _download_from_modelscope(repo_id: str, local_dir: Path) -> Path:
-    local_dir.mkdir(parents=True, exist_ok=True)
-    # Newer ModelScope versions deprecated `local_dir_use_symlinks`.
-    try:
-        ms_snapshot_download(model_id=repo_id, local_dir=str(local_dir))
-    except TypeError:
-        # Backward compatibility for older client signatures.
-        ms_snapshot_download(repo_id, cache_dir=str(local_dir.parent))
-    return local_dir
-
-
-def _ensure_model(model_name: str, mode: str) -> Path:
-    model_map = QWEN35_TEXT_MODELS if mode == "text" else QWEN35_VL_MODELS
-    candidates = model_map.get(model_name)
-    if not candidates:
-        raise ValueError(f"[IAT] Unsupported Qwen3.5 model: {model_name}")
-
-    last_error = None
-    for repo_id in candidates:
-        target = _model_local_dir(repo_id)
-        if target.exists() and _has_weights(target):
-            if mode == "vl" and not _has_vl_processor_files(target):
-                print(f"[IAT] Skip invalid VL model directory (missing processor files): {target}")
-                continue
-            if repo_id != candidates[0]:
-                print(f"[IAT] Using fallback model: {repo_id}")
-            return target
-
-        try:
-            downloaded = _download_from_modelscope(repo_id, target)
-            if _has_weights(downloaded):
-                if mode == "vl" and not _has_vl_processor_files(downloaded):
-                    print(f"[IAT] Downloaded model lacks VL processor files, fallback to next candidate: {repo_id}")
-                    continue
-                print(f"[IAT] Downloaded model from ModelScope: {repo_id}")
-                return downloaded
-        except Exception as exc:
-            last_error = exc
-            print(f"[IAT] ModelScope download failed for {repo_id}: {exc}")
-
-    raise RuntimeError(
-        f"[IAT] Unable to fetch {mode} model for {model_name}. "
-        f"Please verify ModelScope access and transformers version (>={MIN_TRANSFORMERS_FOR_QWEN35}). "
-        f"Last error: {last_error}"
-    )
-def _resolve_device(device: str) -> str:
-    if device == "auto":
-        if torch.cuda.is_available():
-            return "cuda"
-        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-            return "mps"
-        return "cpu"
-    if device == "cuda" and not torch.cuda.is_available():
-        return "cpu"
-    if device == "mps" and not (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()):
-        return "cpu"
-    return device
-
-
-def _dtype_for_device(device: str):
-    return torch.float16 if device in {"cuda", "mps"} else torch.float32
-
-
-def _quant_config(quantization: str):
-    if quantization == "None (FP16/BF16)":
-        return None
-    if BitsAndBytesConfig is None:
-        raise RuntimeError("[IAT] bitsandbytes is required for 4-bit/8-bit quantization.")
-    if quantization == "8-bit":
-        return BitsAndBytesConfig(load_in_8bit=True)
-    if quantization == "4-bit":
-        return BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.float16,
-        )
-    raise ValueError(f"[IAT] Unsupported quantization: {quantization}")
-
-
-def _apply_chat_template(tokenizer, messages):
-    try:
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-    except TypeError:
-        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-
-
-def _check_transformers_support():
-    current = getattr(transformers, "__version__", "0.0.0")
-    if version.parse(current) < version.parse(MIN_TRANSFORMERS_FOR_QWEN35):
-        raise RuntimeError(
-            f"[IAT] transformers>={MIN_TRANSFORMERS_FOR_QWEN35} is required for Qwen3.5. "
-            f"Current version: {current}. Please upgrade and restart ComfyUI."
-        )
-
-
-def _clear_cache(kind: str):
-    cache = _MODEL_CACHE[kind]
-    for key in list(cache.keys()):
-        cache[key] = None
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
-def _load_text_model(model_name: str, quantization: str, device: str):
-    _check_transformers_support()
-    model_dir = _ensure_model(model_name, mode="text")
-    run_device = _resolve_device(device)
-    signature = (str(model_dir), quantization, run_device)
-    cache = _MODEL_CACHE["text"]
-    if cache["model"] is not None and cache["signature"] == signature:
-        return cache["model"], cache["tokenizer"], run_device
-
-    _clear_cache("text")
-    tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
-    qcfg = _quant_config(quantization)
-    load_kwargs = {"trust_remote_code": True}
-    if qcfg is not None:
-        load_kwargs["quantization_config"] = qcfg
-        if run_device == "cuda":
-            load_kwargs["device_map"] = "auto"
-    else:
-        load_kwargs["torch_dtype"] = _dtype_for_device(run_device)
-    model = AutoModelForCausalLM.from_pretrained(str(model_dir), **load_kwargs).eval()
-    if qcfg is None:
-        model.to(run_device)
-
-    cache["model"] = model
-    cache["tokenizer"] = tokenizer
-    cache["signature"] = signature
-    return model, tokenizer, run_device
-
-
-def _load_vl_model(model_name: str, quantization: str, device: str):
-    _check_transformers_support()
-    model_dir = _ensure_model(model_name, mode="vl")
-    run_device = _resolve_device(device)
-    signature = (str(model_dir), quantization, run_device)
-    cache = _MODEL_CACHE["vl"]
-    if cache["model"] is not None and cache["signature"] == signature:
-        return cache["model"], cache["tokenizer"], cache["processor"], run_device
-
-    _clear_cache("vl")
-    processor = AutoProcessor.from_pretrained(str(model_dir), trust_remote_code=True)
-    tokenizer = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
-    qcfg = _quant_config(quantization)
-    load_kwargs = {"trust_remote_code": True}
-    if qcfg is not None:
-        load_kwargs["quantization_config"] = qcfg
-        if run_device == "cuda":
-            load_kwargs["device_map"] = "auto"
-    else:
-        load_kwargs["torch_dtype"] = _dtype_for_device(run_device)
-
-    try:
-        model = AutoModelForVision2Seq.from_pretrained(str(model_dir), **load_kwargs).eval()
-    except Exception as exc:
-        raise RuntimeError(
-            "[IAT] Failed to load VL model. This is usually caused by an old transformers build. "
-            f"Please upgrade to transformers>={MIN_TRANSFORMERS_FOR_QWEN35}. Original error: {exc}"
-        )
-
-    if qcfg is None:
-        model.to(run_device)
-
-    cache["model"] = model
-    cache["tokenizer"] = tokenizer
-    cache["processor"] = processor
-    cache["signature"] = signature
-    return model, tokenizer, processor, run_device
+KONTEXT_SYSTEM_PROMPT = """You are a prompt engineer specialized in image editing prompts.
+Rewrite user requests into clean English prompts that are explicit, editable, and production-ready.
+Rules:
+1) Be concrete and visual, avoid vague words.
+2) Preserve identity and composition when user requires consistency.
+3) For replacement tasks, use exact text/object names.
+4) Output only one final English prompt, no explanations.
+"""
 
 
 def _tensor_to_pil(image):
@@ -306,14 +52,22 @@ def _tensor_to_pil(image):
     return Image.fromarray(array)
 
 
+def _detect_language(text: str):
+    if re.search(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]", text):
+        return "ja" if re.search(r"[\u3040-\u309F\u30A0-\u30FF]", text) else "zh"
+    if re.search(r"[a-zA-Z]", text):
+        return "en"
+    return None
+
+
 class Qwen35PromptEnhancerNode:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model_name": (list(QWEN35_TEXT_MODELS.keys()), {"default": "Qwen3.5-4B"}),
-                "quantization": (QUANT_OPTIONS, {"default": "None (FP16/BF16)"}),
-                "device": (DEVICE_OPTIONS, {"default": "auto"}),
+                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else "Qwen3.5-Latest"}),
+                "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
+                "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
                 "prompt_text": ("STRING", {"default": "", "multiline": True}),
                 "enhancement_style": (list(PROMPT_STYLES.keys()), {"default": "Enhance"}),
                 "custom_system_prompt": ("STRING", {"default": "", "multiline": True}),
@@ -333,7 +87,7 @@ class Qwen35PromptEnhancerNode:
 
     def enhance_prompt(
         self,
-        model_name,
+        model_variant,
         quantization,
         device,
         prompt_text,
@@ -346,32 +100,26 @@ class Qwen35PromptEnhancerNode:
         keep_model_loaded,
         seed,
     ):
-        torch.manual_seed(seed)
-        model, tokenizer, run_device = _load_text_model(model_name, quantization, device)
-        system_prompt = custom_system_prompt.strip() or PROMPT_STYLES.get(enhancement_style, PROMPT_STYLES["Enhance"])
+        system_prompt = (custom_system_prompt or "").strip() or PROMPT_STYLES.get(enhancement_style, PROMPT_STYLES["Enhance"])
         user_prompt = (prompt_text or "").strip() or "Describe a cinematic scene in rich visual detail."
-        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-        prompt = _apply_chat_template(tokenizer, messages)
 
-        model_inputs = tokenizer([prompt], return_tensors="pt")
-        model_device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device(run_device)
-        model_inputs = {k: v.to(model_device) if torch.is_tensor(v) else v for k, v in model_inputs.items()}
-
-        output_ids = model.generate(
-            **model_inputs,
-            max_new_tokens=max_tokens,
-            repetition_penalty=repetition_penalty,
-            do_sample=temperature > 0,
-            temperature=max(temperature, 1e-5),
+        text = generate_text(
+            variant=model_variant,
+            quantization=quantization,
+            device=device,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
             top_p=top_p,
-            pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
+            repetition_penalty=repetition_penalty,
+            seed=seed,
         )
-        generated = output_ids[0][model_inputs["input_ids"].shape[-1] :]
-        text = tokenizer.decode(generated, skip_special_tokens=True).strip()
 
         if not keep_model_loaded:
-            _clear_cache("text")
+            unload_all_models()
         return (text,)
 
 
@@ -380,9 +128,9 @@ class Qwen35ReversePromptNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model_name": (list(QWEN35_VL_MODELS.keys()), {"default": "Qwen3.5-4B"}),
-                "quantization": (QUANT_OPTIONS, {"default": "None (FP16/BF16)"}),
-                "device": (DEVICE_OPTIONS, {"default": "auto"}),
+                "model_variant": (list(VL_MODEL_CANDIDATES.keys()), {"default": _DEFAULT_VARIANT if _DEFAULT_VARIANT in VL_MODEL_CANDIDATES else "Qwen3.5-Latest"}),
+                "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
+                "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
                 "preset_prompt": (list(REVERSE_PRESETS.keys()), {"default": "Detailed Description"}),
                 "custom_prompt": ("STRING", {"default": "", "multiline": True}),
                 "max_tokens": ("INT", {"default": 512, "min": 64, "max": 2048}),
@@ -402,7 +150,7 @@ class Qwen35ReversePromptNode:
 
     def reverse_prompt(
         self,
-        model_name,
+        model_variant,
         quantization,
         device,
         preset_prompt,
@@ -418,51 +166,140 @@ class Qwen35ReversePromptNode:
         if image is None:
             return ("[IAT] Please connect an IMAGE input for reverse prompt.",)
 
-        torch.manual_seed(seed)
-        model, tokenizer, processor, run_device = _load_vl_model(model_name, quantization, device)
         text_prompt = (custom_prompt or "").strip() or REVERSE_PRESETS.get(preset_prompt, REVERSE_PRESETS["Detailed Description"])
         pil_image = _tensor_to_pil(image)
 
-        conversation = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": pil_image},
-                    {"type": "text", "text": text_prompt},
-                ],
-            }
-        ]
-        chat = processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
-        processed = processor(text=chat, images=[pil_image], return_tensors="pt")
-
-        model_device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device(run_device)
-        model_inputs = {k: v.to(model_device) if torch.is_tensor(v) else v for k, v in processed.items()}
-
-        output_ids = model.generate(
-            **model_inputs,
-            max_new_tokens=max_tokens,
-            repetition_penalty=repetition_penalty,
-            do_sample=temperature > 0,
-            temperature=max(temperature, 1e-5),
+        text = generate_vision_text(
+            variant=model_variant,
+            quantization=quantization,
+            device=device,
+            image=pil_image,
+            text_prompt=text_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
             top_p=top_p,
-            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
+            repetition_penalty=repetition_penalty,
+            seed=seed,
         )
-        input_len = model_inputs["input_ids"].shape[-1]
-        generated = output_ids[0][input_len:]
-        text = tokenizer.decode(generated, skip_special_tokens=True).strip()
 
         if not keep_model_loaded:
-            _clear_cache("vl")
+            unload_all_models()
         return (text,)
+
+
+class QwenTranslatorNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text": ("STRING", {"multiline": True, "default": "请输入要翻译的文本"}),
+                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else "Qwen3.5-Latest"}),
+                "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
+                "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
+                "max_tokens": ("INT", {"default": 512, "min": 32, "max": 2048}),
+                "temperature": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.5}),
+                "keep_model_loaded": ("BOOLEAN", {"default": True}),
+                "seed": ("INT", {"default": 1, "min": 1, "max": 2**32 - 1}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("translated_text",)
+    FUNCTION = "translate"
+    CATEGORY = "IAT/Qwen3.5"
+
+    def translate(self, text, model_variant, quantization, device, max_tokens, temperature, keep_model_loaded, seed):
+        src = (text or "").strip()
+        if not src:
+            return ("",)
+
+        lang = _detect_language(src)
+        if lang == "en":
+            return (src,)
+
+        response = generate_text(
+            variant=model_variant,
+            quantization=quantization,
+            device=device,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a professional translator. Translate Chinese/Japanese to natural English. Return only the translation.",
+                },
+                {"role": "user", "content": src},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=1.0,
+            repetition_penalty=1.0,
+            seed=seed,
+        )
+
+        if not keep_model_loaded:
+            unload_all_models()
+        return (response.strip(),)
+
+
+class QwenKontextTranslatorNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text": ("STRING", {"multiline": True, "default": "请输入要优化的编辑指令"}),
+                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else "Qwen3.5-Latest"}),
+                "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
+                "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
+                "max_tokens": ("INT", {"default": 512, "min": 32, "max": 2048}),
+                "temperature": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 1.5}),
+                "keep_model_loaded": ("BOOLEAN", {"default": True}),
+                "seed": ("INT", {"default": 1, "min": 1, "max": 2**32 - 1}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("optimized_prompt",)
+    FUNCTION = "optimize_prompt"
+    CATEGORY = "IAT/Qwen3.5"
+
+    def optimize_prompt(self, text, model_variant, quantization, device, max_tokens, temperature, keep_model_loaded, seed):
+        src = (text or "").strip()
+        if not src:
+            return ("",)
+
+        response = generate_text(
+            variant=model_variant,
+            quantization=quantization,
+            device=device,
+            messages=[
+                {"role": "system", "content": KONTEXT_SYSTEM_PROMPT},
+                {"role": "user", "content": src},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=0.9,
+            repetition_penalty=1.05,
+            seed=seed,
+        )
+
+        if "```" in response:
+            parts = response.split("```")
+            response = parts[1] if len(parts) > 1 else parts[0]
+
+        if not keep_model_loaded:
+            unload_all_models()
+        return (response.strip(),)
 
 
 NODE_CLASS_MAPPINGS = {
     "Qwen35PromptEnhancer by IAT": Qwen35PromptEnhancerNode,
     "Qwen35ReversePrompt by IAT": Qwen35ReversePromptNode,
+    "QwenTranslator by IAT": QwenTranslatorNode,
+    "QwenKontextTranslator by IAT": QwenKontextTranslatorNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "Qwen35PromptEnhancer by IAT": "Qwen3.5 Prompt Enhancer by IAT",
     "Qwen35ReversePrompt by IAT": "Qwen3.5 Reverse Prompt by IAT",
+    "QwenTranslator by IAT": "Qwen Translator by IAT",
+    "QwenKontextTranslator by IAT": "Qwen Kontext Translator by IAT",
 }
