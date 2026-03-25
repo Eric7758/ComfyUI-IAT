@@ -1,17 +1,16 @@
-import torch
 import base64
-from io import BytesIO
-from PIL import Image
-import numpy as np
-import os
 import datetime
+import os
 import re
+from io import BytesIO
 
-# SmartPathBuilderNode
+import numpy as np
+import torch
+from PIL import Image
+
+
 def _format_datetime(fmt: str) -> str:
-    """Format date/time string with ComfyUI-style tokens."""
     now = datetime.datetime.now()
-    # Escape literal % (though rare in practice)
     fmt = fmt.replace("%%", "__ESCAPED_PERCENT__")
     fmt = fmt.replace("yyyy", "%Y").replace("yy", "%y")
     fmt = fmt.replace("MM", "%m").replace("dd", "%d")
@@ -19,12 +18,13 @@ def _format_datetime(fmt: str) -> str:
     fmt = fmt.replace("__ESCAPED_PERCENT__", "%%")
     return now.strftime(fmt)
 
+
 class SmartPathBuilderNode:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "level1": ("STRING", {"default": "", "multiline": False, "tooltip": "First path component (can be absolute path like C:\\Users\\xxx or %date%)"}),
+                "level1": ("STRING", {"default": "", "multiline": False, "tooltip": "First path component (can be absolute path or %date%)."}),
                 "level2": ("STRING", {"default": "", "multiline": False}),
                 "level3": ("STRING", {"default": "", "multiline": False}),
             }
@@ -33,11 +33,10 @@ class SmartPathBuilderNode:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("filename_prefix",)
     FUNCTION = "build_path"
-    CATEGORY = "utils"
-    DESCRIPTION = "Builds a path from three string levels with %date:fmt% and %time:fmt% support. Handles absolute paths automatically."
+    CATEGORY = "IAT/Input"
+    DESCRIPTION = "Builds a path from three levels with %date:fmt% and %time:fmt% support."
 
     def _parse_placeholders(self, s: str) -> str:
-        """Parse %date:...% and %time:...% placeholders."""
         def replace_date(match):
             fmt = match.group(1) or "yyyy-MM-dd"
             return _format_datetime(fmt)
@@ -51,36 +50,21 @@ class SmartPathBuilderNode:
         return s
 
     def build_path(self, level1, level2, level3):
-        # Collect non-empty levels
-        raw_parts = [level1.strip(), level2.strip(), level3.strip()]
-        parts = [p for p in raw_parts if p]
-
+        parts = [p.strip() for p in (level1, level2, level3) if p and p.strip()]
         if not parts:
             return ("",)
 
-        # Parse placeholders in each part
         parsed_parts = [self._parse_placeholders(p) for p in parts]
-
-        # Join all parts with os.path.join — this automatically handles:
-        # - If first part is absolute (e.g., "C:\\" or "/xxx"), the rest are appended as subdirs
-        # - If all are relative, it builds a relative path
-        full_path = os.path.join(*parsed_parts)
-
-        # Normalize path (resolve redundant separators, ., .. if any)
-        full_path = os.path.normpath(full_path)
-
+        full_path = os.path.normpath(os.path.join(*parsed_parts))
         return (full_path,)
 
-# Base64ToImageNode
+
 class Base64ToImageNode:
-    @classmethod 
+    @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "base64_str": ("STRING", {
-                    "multiline": True,
-                    "default": ""
-                }),
+                "base64_str": ("STRING", {"multiline": True, "default": ""}),
             },
         }
 
@@ -90,32 +74,32 @@ class Base64ToImageNode:
 
     def convert_base64(self, base64_str):
         try:
-            if "base64," in base64_str:
-                base64_str = base64_str.split("base64,")[1]
-            img_data = base64.b64decode(base64_str)
+            value = (base64_str or "").strip()
+            if not value:
+                raise ValueError("empty base64 input")
+            if "base64," in value:
+                value = value.split("base64,", 1)[1]
+
+            img_data = base64.b64decode(value)
             img = Image.open(BytesIO(img_data))
             if img.mode != "RGB":
                 img = img.convert("RGB")
-            img_np = np.array(img).astype(np.float32) / 255.0
+
+            img_np = np.asarray(img).astype(np.float32) / 255.0
             img_tensor = torch.from_numpy(img_np)[None,]
             return (img_tensor,)
         except Exception as e:
-            print(f"Base64转换失败: {str(e)}")
-            blank_img = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
-            return (blank_img,)
+            print(f"[IAT] Base64ToImage failed: {e}")
+            blank = torch.zeros((1, 512, 512, 3), dtype=torch.float32)
+            return (blank,)
 
-# FloatInputNode
+
 class FloatInputNode:
-    @classmethod 
+    @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "value": ("FLOAT", {
-                    "default": 0.0,
-                    "min": 0.0,
-                    "max": 100.0,
-                    "step": 0.01
-                }),
+                "value": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 100.0, "step": 0.01}),
             },
         }
 
@@ -126,18 +110,13 @@ class FloatInputNode:
     def get_float(self, value):
         return (value,)
 
-# IntInputNode
+
 class IntInputNode:
-    @classmethod 
+    @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "value": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "max": 100000,
-                    "step": 1
-                }),
+                "value": ("INT", {"default": 0, "min": 0, "max": 100000, "step": 1}),
             },
         }
 
@@ -148,16 +127,13 @@ class IntInputNode:
     def get_int(self, value):
         return (value,)
 
-# TextInputNode
+
 class TextInputNode:
-    @classmethod 
+    @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "text": ("STRING", {
-                    "multiline": True,
-                    "default": "请输入文本"
-                }),
+                "text": ("STRING", {"multiline": True, "default": "请输入文本"}),
             },
         }
 
@@ -168,21 +144,14 @@ class TextInputNode:
     def get_text(self, text):
         return (text,)
 
-# SeedGeneratorNode
+
 class SeedGeneratorNode:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "seed": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "max": 9999999999,
-                    "step": 1
-                }),
-                "control_after_generate": ("BOOLEAN", {
-                    "default": True
-                }),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 9999999999, "step": 1}),
+                "control_after_generate": ("BOOLEAN", {"default": True}),
             },
         }
 
@@ -193,7 +162,7 @@ class SeedGeneratorNode:
     def generate_seed(self, seed, control_after_generate):
         return (seed,)
 
-# 节点映射
+
 NODE_CLASS_MAPPINGS = {
     "SmartPathBuilderNode by IAT": SmartPathBuilderNode,
     "Base64ToImageNode by IAT": Base64ToImageNode,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import gc
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import torch
 import transformers
@@ -37,7 +37,6 @@ import folder_paths
 
 MIN_TRANSFORMERS_FOR_QWEN35 = "4.57.0"
 
-# "Latest" points to newest Qwen3.5 first, then gracefully falls back.
 TEXT_MODEL_CANDIDATES: Dict[str, List[str]] = {
     "Qwen3.5-Latest": [
         "Qwen/Qwen3.5-35B-A3B",
@@ -54,7 +53,6 @@ TEXT_MODEL_CANDIDATES: Dict[str, List[str]] = {
 }
 
 VL_MODEL_CANDIDATES: Dict[str, List[str]] = {
-    # Qwen3.5 is a unified multimodal family. Do not fall back to Qwen3-VL/Qwen2.5-VL.
     "Qwen3.5-Latest": [
         "Qwen/Qwen3.5-35B-A3B",
         "Qwen/Qwen3.5-27B",
@@ -82,8 +80,7 @@ def _check_transformers_support() -> None:
     current = getattr(transformers, "__version__", "0.0.0")
     if version.parse(current) < version.parse(MIN_TRANSFORMERS_FOR_QWEN35):
         raise RuntimeError(
-            f"[IAT] transformers>={MIN_TRANSFORMERS_FOR_QWEN35} is required for Qwen3.5. "
-            f"Current version: {current}."
+            f"[IAT] transformers>={MIN_TRANSFORMERS_FOR_QWEN35} is required for Qwen3.5. Current version: {current}."
         )
 
 
@@ -139,12 +136,7 @@ def _download_from_hf(repo_id: str, local_dir: Path) -> bool:
     if hf_snapshot_download is None:
         return False
     local_dir.mkdir(parents=True, exist_ok=True)
-    hf_snapshot_download(
-        repo_id=repo_id,
-        local_dir=str(local_dir),
-        local_dir_use_symlinks=False,
-        resume_download=True,
-    )
+    hf_snapshot_download(repo_id=repo_id, local_dir=str(local_dir))
     return True
 
 
@@ -157,7 +149,6 @@ def ensure_model(variant: str, mode: str) -> Path:
     errors: List[str] = []
     for repo_id in candidates:
         target = _model_local_dir(repo_id)
-
         if target.exists() and _has_weights(target):
             if mode == "vl" and not _has_vl_processor_files(target):
                 print(f"[IAT] Skip invalid VL model dir (missing processor files): {target}")
@@ -184,7 +175,6 @@ def ensure_model(variant: str, mode: str) -> Path:
     raise RuntimeError(
         "[IAT] Failed to prepare Qwen3.5 model. "
         f"Variant={variant}, mode={mode}, tried={', '.join(candidates)}. "
-        "Please ensure network access to ModelScope or HuggingFace. "
         f"Details: {' | '.join(errors[-6:])}"
     )
 
@@ -204,6 +194,8 @@ def resolve_device(device: str) -> str:
 
 
 def _dtype_for_device(device: str):
+    if device == "cuda" and hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_bf16_supported():
+        return torch.bfloat16
     return torch.float16 if device in {"cuda", "mps"} else torch.float32
 
 
@@ -224,26 +216,23 @@ def _quant_config(quantization: str):
     raise ValueError(f"[IAT] Unsupported quantization: {quantization}")
 
 
+def _assert_quant_applied(model, quantization: str, mode: str):
+    if quantization == "8-bit" and not bool(getattr(model, "is_loaded_in_8bit", False)):
+        raise RuntimeError(f"[IAT] {mode} quantization mismatch: requested 8-bit but model is not 8-bit.")
+    if quantization == "4-bit" and not bool(getattr(model, "is_loaded_in_4bit", False)):
+        raise RuntimeError(f"[IAT] {mode} quantization mismatch: requested 4-bit but model is not 4-bit.")
+
+
 def apply_chat_template(tokenizer, messages) -> str:
     try:
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
+        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
     except TypeError:
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
 def apply_vl_chat_template(processor, conversation) -> str:
     try:
-        return processor.apply_chat_template(
-            conversation,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
+        return processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True, enable_thinking=False)
     except TypeError:
         return processor.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
 
@@ -291,17 +280,22 @@ def load_text_model(variant: str, quantization: str, device: str):
     tokenizer = _load_tokenizer(model_dir)
 
     qcfg = _quant_config(quantization)
-    kwargs = {"trust_remote_code": True}
+    kwargs = {"trust_remote_code": True, "low_cpu_mem_usage": True}
+
     if qcfg is not None:
+        if run_device != "cuda":
+            raise RuntimeError("[IAT] 4-bit/8-bit quantization requires CUDA device.")
         kwargs["quantization_config"] = qcfg
-        if run_device == "cuda":
-            kwargs["device_map"] = "auto"
     else:
-        kwargs["torch_dtype"] = _dtype_for_device(run_device)
+        kwargs["dtype"] = _dtype_for_device(run_device)
 
     model = AutoModelForCausalLM.from_pretrained(str(model_dir), **kwargs).eval()
     if qcfg is None:
         model.to(run_device)
+    else:
+        _assert_quant_applied(model, quantization, mode="Text")
+
+    print(f"[IAT] Text model loaded: variant={variant}, device={run_device}, quant={quantization}")
 
     cache["signature"] = signature
     cache["model"] = model
@@ -324,17 +318,22 @@ def load_vl_model(variant: str, quantization: str, device: str):
     tokenizer = _load_tokenizer(model_dir)
 
     qcfg = _quant_config(quantization)
-    kwargs = {"trust_remote_code": True}
+    kwargs = {"trust_remote_code": True, "low_cpu_mem_usage": True}
+
     if qcfg is not None:
+        if run_device != "cuda":
+            raise RuntimeError("[IAT] 4-bit/8-bit quantization requires CUDA device.")
         kwargs["quantization_config"] = qcfg
-        if run_device == "cuda":
-            kwargs["device_map"] = "auto"
     else:
-        kwargs["torch_dtype"] = _dtype_for_device(run_device)
+        kwargs["dtype"] = _dtype_for_device(run_device)
 
     model = AutoModelForVision2Seq.from_pretrained(str(model_dir), **kwargs).eval()
     if qcfg is None:
         model.to(run_device)
+    else:
+        _assert_quant_applied(model, quantization, mode="VL")
+
+    print(f"[IAT] VL model loaded: variant={variant}, device={run_device}, quant={quantization}")
 
     cache["signature"] = signature
     cache["model"] = model
@@ -356,6 +355,7 @@ def generate_text(
     seed: int,
 ) -> str:
     torch.manual_seed(seed)
+    print("[IAT] [Text] Loading model...")
     model, tokenizer, run_device = load_text_model(variant, quantization, device)
     prompt = apply_chat_template(tokenizer, messages)
 
@@ -363,18 +363,21 @@ def generate_text(
     model_device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device(run_device)
     model_inputs = {k: v.to(model_device) if torch.is_tensor(v) else v for k, v in model_inputs.items()}
 
-    output_ids = model.generate(
-        **model_inputs,
-        max_new_tokens=max_tokens,
-        repetition_penalty=repetition_penalty,
-        do_sample=temperature > 0,
-        temperature=max(temperature, 1e-5),
-        top_p=top_p,
-        pad_token_id=tokenizer.eos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-    )
+    print("[IAT] [Text] Generating (thinking disabled)...")
+    gen_kwargs = {
+        "max_new_tokens": max_tokens,
+        "repetition_penalty": repetition_penalty,
+        "do_sample": temperature > 0,
+        "top_p": top_p,
+        "pad_token_id": tokenizer.eos_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+    }
+    if temperature > 0:
+        gen_kwargs["temperature"] = max(temperature, 1e-5)
+
+    output_ids = model.generate(**model_inputs, **gen_kwargs)
     generated = output_ids[0][model_inputs["input_ids"].shape[-1] :]
-    return tokenizer.decode(generated, skip_special_tokens=True).strip()
+    return _strip_thinking_content(tokenizer.decode(generated, skip_special_tokens=True))
 
 
 def generate_vision_text(
@@ -391,6 +394,7 @@ def generate_vision_text(
     seed: int,
 ) -> str:
     torch.manual_seed(seed)
+    print("[IAT] [VL] Loading model...")
     model, tokenizer, processor, run_device = load_vl_model(variant, quantization, device)
 
     if not isinstance(images, list):
@@ -399,6 +403,7 @@ def generate_vision_text(
     if len(images) == 0:
         raise ValueError("[IAT] generate_vision_text requires at least one image.")
 
+    print(f"[IAT] [VL] Reading images: {len(images)}")
     content = [{"type": "image", "image": img} for img in images]
     content.append({"type": "text", "text": text_prompt})
 
@@ -409,25 +414,18 @@ def generate_vision_text(
     model_device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device(run_device)
     model_inputs = {k: v.to(model_device) if torch.is_tensor(v) else v for k, v in processed.items()}
 
-    output_ids = model.generate(
-        **model_inputs,
-        max_new_tokens=max_tokens,
-        repetition_penalty=repetition_penalty,
-        do_sample=temperature > 0,
-        temperature=max(temperature, 1e-5),
-        top_p=top_p,
-        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-    )
+    print("[IAT] [VL] Generating (thinking disabled)...")
+    gen_kwargs = {
+        "max_new_tokens": max_tokens,
+        "repetition_penalty": repetition_penalty,
+        "do_sample": temperature > 0,
+        "top_p": top_p,
+        "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+    }
+    if temperature > 0:
+        gen_kwargs["temperature"] = max(temperature, 1e-5)
+
+    output_ids = model.generate(**model_inputs, **gen_kwargs)
     generated = output_ids[0][model_inputs["input_ids"].shape[-1] :]
-    return tokenizer.decode(generated, skip_special_tokens=True).strip()
-
-
-
-
-
-
-
-
-
-
+    return _strip_thinking_content(tokenizer.decode(generated, skip_special_tokens=True))

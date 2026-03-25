@@ -15,7 +15,7 @@ from .qwen35_runtime import (
 
 _CFG = getattr(sys.modules.get("comfyui_iat_config"), "data", {}) or {}
 _MODEL_CFG = (_CFG.get("model") or {}) if isinstance(_CFG, dict) else {}
-_DEFAULT_VARIANT = _MODEL_CFG.get("default_variant", "Qwen3.5-Latest")
+_DEFAULT_VARIANT = _MODEL_CFG.get("default_variant", "Qwen3.5-0.8B")
 _DEFAULT_QUANT = _MODEL_CFG.get("quantization", "None (FP16/BF16)")
 _DEFAULT_DEVICE = _MODEL_CFG.get("device", "auto")
 
@@ -143,8 +143,8 @@ class Qwen35ReversePromptNode:
                 "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
                 "preset_prompt": (list(REVERSE_PRESETS.keys()), {"default": "Detailed Description"}),
                 "custom_prompt": ("STRING", {"default": "", "multiline": True}),
-                "max_tokens": ("INT", {"default": 512, "min": 64, "max": 2048}),
-                "temperature": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 1.5}),
+                "max_tokens": ("INT", {"default": 192, "min": 64, "max": 2048}),
+                "temperature": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.5}),
                 "top_p": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0}),
                 "repetition_penalty": ("FLOAT", {"default": 1.1, "min": 0.5, "max": 2.0}),
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
@@ -268,7 +268,7 @@ class QwenKontextTranslatorNode:
                 "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
                 "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
                 "max_tokens": ("INT", {"default": 512, "min": 32, "max": 2048}),
-                "temperature": ("FLOAT", {"default": 0.6, "min": 0.0, "max": 1.5}),
+                "temperature": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.5}),
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
                 "seed": ("INT", {"default": 1, "min": 1, "max": 2**32 - 1}),
             }
