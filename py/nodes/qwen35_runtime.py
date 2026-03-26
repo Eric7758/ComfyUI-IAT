@@ -35,6 +35,11 @@ except Exception:
 
 import folder_paths
 
+try:
+    import comfy.model_management as model_management
+except Exception:
+    model_management = None
+
 MIN_TRANSFORMERS_FOR_QWEN35 = "4.57.0"
 
 TEXT_MODEL_CANDIDATES: Dict[str, List[str]] = {
@@ -199,6 +204,30 @@ def _dtype_for_device(device: str):
     return torch.float16 if device in {"cuda", "mps"} else torch.float32
 
 
+def _cuda_max_memory_map(reserve_gib: int = 2):
+    if not torch.cuda.is_available():
+        return None
+    max_memory = {}
+    for idx in range(torch.cuda.device_count()):
+        total_gib = torch.cuda.get_device_properties(idx).total_memory // (1024**3)
+        usable_gib = max(1, int(total_gib) - reserve_gib)
+        max_memory[idx] = f"{usable_gib}GiB"
+    return max_memory
+
+
+def _prepare_cuda_for_load():
+    if not torch.cuda.is_available():
+        return
+    try:
+        if model_management is not None:
+            model_management.unload_all_models()
+            model_management.soft_empty_cache()
+    except Exception as exc:
+        print(f"[IAT] model_management cleanup skipped: {exc}")
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
 def _quant_config(quantization: str):
     if quantization == "None (FP16/BF16)":
         return None
@@ -277,6 +306,8 @@ def load_text_model(variant: str, quantization: str, device: str):
         return cache["model"], cache["tokenizer"], run_device
 
     _clear_cache("text")
+    if run_device == "cuda":
+        _prepare_cuda_for_load()
     tokenizer = _load_tokenizer(model_dir)
 
     qcfg = _quant_config(quantization)
@@ -286,6 +317,11 @@ def load_text_model(variant: str, quantization: str, device: str):
         if run_device != "cuda":
             raise RuntimeError("[IAT] 4-bit/8-bit quantization requires CUDA device.")
         kwargs["quantization_config"] = qcfg
+        kwargs["dtype"] = torch.float16
+        kwargs["device_map"] = "auto"
+        max_memory = _cuda_max_memory_map()
+        if max_memory:
+            kwargs["max_memory"] = max_memory
     else:
         kwargs["dtype"] = _dtype_for_device(run_device)
 
@@ -314,6 +350,8 @@ def load_vl_model(variant: str, quantization: str, device: str):
         return cache["model"], cache["tokenizer"], cache["processor"], run_device
 
     _clear_cache("vl")
+    if run_device == "cuda":
+        _prepare_cuda_for_load()
     processor = AutoProcessor.from_pretrained(str(model_dir), trust_remote_code=True)
     tokenizer = _load_tokenizer(model_dir)
 
@@ -324,6 +362,11 @@ def load_vl_model(variant: str, quantization: str, device: str):
         if run_device != "cuda":
             raise RuntimeError("[IAT] 4-bit/8-bit quantization requires CUDA device.")
         kwargs["quantization_config"] = qcfg
+        kwargs["dtype"] = torch.float16
+        kwargs["device_map"] = "auto"
+        max_memory = _cuda_max_memory_map()
+        if max_memory:
+            kwargs["max_memory"] = max_memory
     else:
         kwargs["dtype"] = _dtype_for_device(run_device)
 
