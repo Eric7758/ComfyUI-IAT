@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import gc
 import re
@@ -81,6 +81,17 @@ _MODEL_CACHE = {
 }
 
 
+_GREEN = "\033[92m"
+_RESET = "\033[0m"
+
+
+def _log_major(message: str):
+    print(f"{_GREEN}[IAT] {message}{_RESET}")
+
+
+def _log_info(message: str):
+    print(f"[IAT] {message}")
+
 def _check_transformers_support() -> None:
     current = getattr(transformers, "__version__", "0.0.0")
     if version.parse(current) < version.parse(MIN_TRANSFORMERS_FOR_QWEN35):
@@ -156,10 +167,10 @@ def ensure_model(variant: str, mode: str) -> Path:
         target = _model_local_dir(repo_id)
         if target.exists() and _has_weights(target):
             if mode == "vl" and not _has_vl_processor_files(target):
-                print(f"[IAT] Skip invalid VL model dir (missing processor files): {target}")
+                _log_info(f"跳过无效多模态模型目录（缺少处理器文件）: {target}")
             else:
                 if repo_id != candidates[0]:
-                    print(f"[IAT] Using fallback repository: {repo_id}")
+                    _log_info(f"使用候选回退仓库: {repo_id}")
                 return target
 
         for source_name, downloader in (("ModelScope", _download_from_modelscope), ("HuggingFace", _download_from_hf)):
@@ -171,7 +182,7 @@ def ensure_model(variant: str, mode: str) -> Path:
                     if mode == "vl" and not _has_vl_processor_files(target):
                         errors.append(f"{repo_id}: missing VL processor files after {source_name} download")
                         continue
-                    print(f"[IAT] Downloaded {repo_id} from {source_name} -> {target}")
+                    _log_major(f"模型已下载: {repo_id} <- {source_name}")
                     return target
                 errors.append(f"{repo_id}: no model weights after {source_name} download")
             except Exception as exc:
@@ -223,7 +234,7 @@ def _prepare_cuda_for_load():
             model_management.unload_all_models()
             model_management.soft_empty_cache()
     except Exception as exc:
-        print(f"[IAT] model_management cleanup skipped: {exc}")
+        _log_info(f"model_management 清理跳过: {exc}")
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -277,7 +288,7 @@ def _load_tokenizer(model_dir: Path):
     try:
         return AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
     except Exception as exc:
-        print(f"[IAT] Fast tokenizer load failed, fallback to slow tokenizer: {exc}")
+        _log_info(f"快速 tokenizer 加载失败，回退慢速 tokenizer: {exc}")
         return AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True, use_fast=False)
 
 
@@ -331,7 +342,7 @@ def load_text_model(variant: str, quantization: str, device: str):
     else:
         _assert_quant_applied(model, quantization, mode="Text")
 
-    print(f"[IAT] Text model loaded: variant={variant}, device={run_device}, quant={quantization}")
+    _log_major(f"文本模型加载完成 | 规格={variant} | 设备={run_device} | 量化={quantization}")
 
     cache["signature"] = signature
     cache["model"] = model
@@ -376,7 +387,7 @@ def load_vl_model(variant: str, quantization: str, device: str):
     else:
         _assert_quant_applied(model, quantization, mode="VL")
 
-    print(f"[IAT] VL model loaded: variant={variant}, device={run_device}, quant={quantization}")
+    _log_major(f"多模态模型加载完成 | 规格={variant} | 设备={run_device} | 量化={quantization}")
 
     cache["signature"] = signature
     cache["model"] = model
@@ -398,7 +409,7 @@ def generate_text(
     seed: int,
 ) -> str:
     torch.manual_seed(seed)
-    print("[IAT] [Text] Loading model...")
+    _log_major("【文本任务】阶段1/2：正在加载模型...")
     model, tokenizer, run_device = load_text_model(variant, quantization, device)
     prompt = apply_chat_template(tokenizer, messages)
 
@@ -406,7 +417,7 @@ def generate_text(
     model_device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device(run_device)
     model_inputs = {k: v.to(model_device) if torch.is_tensor(v) else v for k, v in model_inputs.items()}
 
-    print("[IAT] [Text] Generating (thinking disabled)...")
+    _log_major("【文本任务】阶段2/2：正在生成（已禁用思考）...")
     gen_kwargs = {
         "max_new_tokens": max_tokens,
         "repetition_penalty": repetition_penalty,
@@ -437,7 +448,7 @@ def generate_vision_text(
     seed: int,
 ) -> str:
     torch.manual_seed(seed)
-    print("[IAT] [VL] Loading model...")
+    _log_major("【多模态任务】阶段1/3：正在加载模型...")
     model, tokenizer, processor, run_device = load_vl_model(variant, quantization, device)
 
     if not isinstance(images, list):
@@ -446,7 +457,7 @@ def generate_vision_text(
     if len(images) == 0:
         raise ValueError("[IAT] generate_vision_text requires at least one image.")
 
-    print(f"[IAT] [VL] Reading images: {len(images)}")
+    _log_major(f"【多模态任务】阶段2/3：正在读取图像（{len(images)}张）...")
     content = [{"type": "image", "image": img} for img in images]
     content.append({"type": "text", "text": text_prompt})
 
@@ -457,7 +468,7 @@ def generate_vision_text(
     model_device = next(model.parameters()).device if hasattr(model, "parameters") else torch.device(run_device)
     model_inputs = {k: v.to(model_device) if torch.is_tensor(v) else v for k, v in processed.items()}
 
-    print("[IAT] [VL] Generating (thinking disabled)...")
+    _log_major("【多模态任务】阶段3/3：正在生成（已禁用思考）...")
     gen_kwargs = {
         "max_new_tokens": max_tokens,
         "repetition_penalty": repetition_penalty,
@@ -472,3 +483,4 @@ def generate_vision_text(
     output_ids = model.generate(**model_inputs, **gen_kwargs)
     generated = output_ids[0][model_inputs["input_ids"].shape[-1] :]
     return _strip_thinking_content(tokenizer.decode(generated, skip_special_tokens=True))
+

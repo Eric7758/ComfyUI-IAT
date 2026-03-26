@@ -1,4 +1,4 @@
-import re
+﻿import re
 import sys
 
 from PIL import Image
@@ -316,8 +316,9 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Qwen35PromptEnhancer by IAT": "Qwen3.5 Prompt Enhancer by IAT",
-    "Qwen35ReversePrompt by IAT": "Qwen3.5 Reverse Prompt by IAT",
-    "QwenTranslator by IAT": "Qwen Translator by IAT",
-    "QwenKontextTranslator by IAT": "Qwen Kontext Translator by IAT",
+    "Qwen35PromptEnhancer by IAT": "Qwen3.5 提示词增强器（IAT）",
+    "Qwen35ReversePrompt by IAT": "Qwen3.5 反推提示词（IAT）",
+    "QwenTranslator by IAT": "Qwen 翻译器（IAT）",
+    "QwenKontextTranslator by IAT": "Qwen 编辑提示词优化（IAT）",
 }
+
