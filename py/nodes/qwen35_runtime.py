@@ -51,10 +51,16 @@ TEXT_MODEL_CANDIDATES: Dict[str, List[str]] = {
         "Qwen/Qwen3.5-2B",
         "Qwen/Qwen3.5-0.8B",
     ],
+    # Dense models
     "Qwen3.5-0.8B": ["Qwen/Qwen3.5-0.8B"],
-    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B"],
-    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B"],
     "Qwen3.5-2B": ["Qwen/Qwen3.5-2B"],
+    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B"],
+    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B"],
+    "Qwen3.5-27B": ["Qwen/Qwen3.5-27B"],
+    # MoE models (Mixture of Experts)
+    "Qwen3.5-35B-A3B": ["Qwen/Qwen3.5-35B-A3B"],
+    "Qwen3.5-122B-A10B": ["Qwen/Qwen3.5-122B-A10B"],
+    "Qwen3.5-397B-A17B": ["Qwen/Qwen3.5-397B-A17B"],
 }
 
 VL_MODEL_CANDIDATES: Dict[str, List[str]] = {
@@ -66,10 +72,16 @@ VL_MODEL_CANDIDATES: Dict[str, List[str]] = {
         "Qwen/Qwen3.5-2B",
         "Qwen/Qwen3.5-0.8B",
     ],
+    # Dense models
     "Qwen3.5-0.8B": ["Qwen/Qwen3.5-0.8B"],
-    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B"],
-    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B"],
     "Qwen3.5-2B": ["Qwen/Qwen3.5-2B"],
+    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B"],
+    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B"],
+    "Qwen3.5-27B": ["Qwen/Qwen3.5-27B"],
+    # MoE models (Mixture of Experts)
+    "Qwen3.5-35B-A3B": ["Qwen/Qwen3.5-35B-A3B"],
+    "Qwen3.5-122B-A10B": ["Qwen/Qwen3.5-122B-A10B"],
+    "Qwen3.5-397B-A17B": ["Qwen/Qwen3.5-397B-A17B"],
 }
 
 QUANT_OPTIONS = ["None (FP16/BF16)", "8-bit", "4-bit"]

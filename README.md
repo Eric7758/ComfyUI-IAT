@@ -137,19 +137,27 @@ Use **Qwen Kontext Translator** for image editing:
 
 ### 📦 Model Support
 
-**Text Models:**
-- Qwen3.5-0.8B
-- Qwen3.5-3B
-- Qwen3.5-7B
-- Qwen3.5-14B
-- Qwen3.5-32B
-- Qwen3.5-Latest
+**Qwen3.5 - Native Multimodal Models**
 
-**Vision-Language Models:**
-- Qwen3.5-VL-3B
-- Qwen3.5-VL-7B
-- Qwen3.5-VL-32B
-- Qwen3.5-VL-Latest
+All Qwen3.5 models support **text + image + video** input with **text** output:
+
+**Dense Models (Standard):**
+- Qwen3.5-0.8B (~0.9B parameters)
+- Qwen3.5-2B (~2B parameters)
+- Qwen3.5-4B (~5B parameters)
+- Qwen3.5-9B (~10B parameters)
+- Qwen3.5-27B (~28B parameters)
+
+**MoE Models (Mixture of Experts):**
+- Qwen3.5-35B-A3B (35B total, 3B active)
+- Qwen3.5-122B-A10B (122B total, 10B active)
+- Qwen3.5-397B-A17B (397B total, 17B active)
+
+**Special Variants:**
+- Qwen3.5-Latest (auto-select best available)
+- Base models (pre-trained)
+- FP8 quantized models
+- GPTQ-Int4 quantized models
 
 **Quantization Options:**
 - None (FP16/BF16) - Best quality
@@ -288,19 +296,29 @@ logging:
 
 ### 📦 模型支持
 
-**文本模型：**
-- Qwen3.5-0.8B
-- Qwen3.5-3B
-- Qwen3.5-7B
-- Qwen3.5-14B
-- Qwen3.5-32B
-- Qwen3.5-Latest
+**Qwen3.5 - 原生多模态模型**
 
-**视觉语言模型：**
-- Qwen3.5-VL-3B
-- Qwen3.5-VL-7B
-- Qwen3.5-VL-32B
-- Qwen3.5-VL-Latest
+所有 Qwen3.5 模型都支持**文本 + 图像 + 视频**输入，**文本**输出：
+
+**Dense 模型（标准）：**
+- Qwen3.5-0.8B（约0.9B参数）
+- Qwen3.5-2B（约2B参数）
+- Qwen3.5-4B（约5B参数）
+- Qwen3.5-9B（约10B参数）
+- Qwen3.5-27B（约28B参数）
+
+**MoE 模型（混合专家）：**
+- Qwen3.5-35B-A3B（35B总参数，3B激活）
+- Qwen3.5-122B-A10B（122B总参数，10B激活）
+- Qwen3.5-397B-A17B（397B总参数，17B激活）
+
+**特殊版本：**
+- Qwen3.5-Latest（自动选择最佳可用）
+- Base 模型（预训练版）
+- FP8 量化模型
+- GPTQ-Int4 量化模型
+
+**注意：** 与 Qwen2.5（有单独的文本和VL版本）不同，所有 Qwen3.5 模型都是原生多模态，采用统一的视觉-语言架构。
 
 **量化选项：**
 - None (FP16/BF16) - 最佳质量
