@@ -1,0 +1,244 @@
+{
+  "last_node_id": 10,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "Qwen35PromptEnhancer by IAT",
+      "pos": [100, 100],
+      "size": [320, 500],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "ENHANCED_OUTPUT",
+          "type": "STRING",
+          "links": [1]
+        }
+      ],
+      "widgets_values": [
+        "Qwen3.5-0.8B",
+        "None (FP16/BF16)",
+        "auto",
+        "a girl in forest",
+        "Enhance",
+        "",
+        256,
+        0.7,
+        0.9,
+        1.1,
+        true,
+        1
+      ]
+    },
+    {
+      "id": 2,
+      "type": "ShowText|pysssss",
+      "pos": [500, 100],
+      "size": [400, 200],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 1
+        }
+      ],
+      "outputs": [],
+      "widgets_values": [""]
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [500, 350],
+      "size": [400, 200],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 1
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [2]
+        }
+      ],
+      "widgets_values": [""]
+    },
+    {
+      "id": 4,
+      "type": "CheckpointLoaderSimple",
+      "pos": [100, 650],
+      "size": [320, 100],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [3]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [4]
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [5]
+        }
+      ],
+      "widgets_values": ["model.safetensors"]
+    },
+    {
+      "id": 5,
+      "type": "KSampler",
+      "pos": [950, 300],
+      "size": [320, 500],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 3
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 2
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": null
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 6
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [7]
+        }
+      ],
+      "widgets_values": [
+        1,
+        "randomize",
+        20,
+        8.0,
+        "euler",
+        "normal",
+        1
+      ]
+    },
+    {
+      "id": 6,
+      "type": "EmptyLatentImage",
+      "pos": [500, 650],
+      "size": [320, 100],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [6]
+        }
+      ],
+      "widgets_values": [
+        512,
+        512,
+        1
+      ]
+    },
+    {
+      "id": 7,
+      "type": "VAEDecode",
+      "pos": [1350, 350],
+      "size": [210, 50],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 7
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 5
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [8]
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "SaveImage",
+      "pos": [1650, 350],
+      "size": [320, 270],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 8
+        }
+      ],
+      "outputs": [],
+      "widgets_values": [
+        "ComfyUI",
+        "%counter%_%date%_%time%"
+      ]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "STRING"],
+    [2, 3, 0, 5, 1, "CONDITIONING"],
+    [3, 4, 0, 5, 0, "MODEL"],
+    [4, 4, 1, 3, 1, "CLIP"],
+    [5, 4, 2, 7, 1, "VAE"],
+    [6, 6, 0, 5, 3, "LATENT"],
+    [7, 5, 0, 7, 0, "LATENT"],
+    [8, 7, 0, 8, 0, "IMAGE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

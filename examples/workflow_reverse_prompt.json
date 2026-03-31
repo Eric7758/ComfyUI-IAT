@@ -1,0 +1,277 @@
+{
+  "last_node_id": 12,
+  "last_link_id": 11,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [100, 100],
+      "size": [320, 280],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [1]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "widgets_values": [
+        "example.png",
+        "image"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "Qwen35ReversePrompt by IAT",
+      "pos": [500, 100],
+      "size": [320, 600],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "RESPONSE",
+          "type": "STRING",
+          "links": [2, 3]
+        }
+      ],
+      "widgets_values": [
+        "Qwen3.5-VL-3B",
+        "None (FP16/BF16)",
+        "auto",
+        "Prompt Reverse",
+        "",
+        256,
+        0.0,
+        0.9,
+        1.1,
+        true,
+        1
+      ]
+    },
+    {
+      "id": 3,
+      "type": "ShowText|pysssss",
+      "pos": [900, 100],
+      "size": [500, 300],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 2
+        }
+      ],
+      "outputs": [],
+      "widgets_values": ["Generated Prompt"]
+    },
+    {
+      "id": 4,
+      "type": "CLIPTextEncode",
+      "pos": [900, 450],
+      "size": [400, 200],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 3
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [4]
+        }
+      ],
+      "widgets_values": [""]
+    },
+    {
+      "id": 5,
+      "type": "CheckpointLoaderSimple",
+      "pos": [100, 500],
+      "size": [320, 100],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [5]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [6]
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [7]
+        }
+      ],
+      "widgets_values": ["model.safetensors"]
+    },
+    {
+      "id": 6,
+      "type": "KSampler",
+      "pos": [1400, 350],
+      "size": [320, 500],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 5
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 4
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": null
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [9]
+        }
+      ],
+      "widgets_values": [
+        1,
+        "randomize",
+        20,
+        8.0,
+        "euler",
+        "normal",
+        1
+      ]
+    },
+    {
+      "id": 7,
+      "type": "EmptyLatentImage",
+      "pos": [900, 700],
+      "size": [320, 100],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [8]
+        }
+      ],
+      "widgets_values": [
+        512,
+        512,
+        1
+      ]
+    },
+    {
+      "id": 8,
+      "type": "VAEDecode",
+      "pos": [1800, 400],
+      "size": [210, 50],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 9
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [10]
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "SaveImage",
+      "pos": [2100, 400],
+      "size": [320, 270],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 10
+        }
+      ],
+      "outputs": [],
+      "widgets_values": [
+        "ComfyUI_Reverse",
+        "%counter%_%date%_%time%"
+      ]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "IMAGE"],
+    [2, 2, 0, 3, 0, "STRING"],
+    [3, 2, 0, 4, 0, "STRING"],
+    [4, 4, 0, 6, 1, "CONDITIONING"],
+    [5, 5, 0, 6, 0, "MODEL"],
+    [6, 5, 1, 4, 1, "CLIP"],
+    [7, 5, 2, 8, 1, "VAE"],
+    [8, 7, 0, 6, 3, "LATENT"],
+    [9, 6, 0, 8, 0, "LATENT"],
+    [10, 8, 0, 9, 0, "IMAGE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

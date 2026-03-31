@@ -1,6 +1,6 @@
 """
 ComfyUI-IAT Plugin
-Version: 1.0.0
+Version: 1.1.0
 Author: Eric7758
 Description: Image & Text utilities with Qwen translator and prompt optimizer.
 """
@@ -11,7 +11,7 @@ import importlib
 import os
 import sys
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 NODE_CLASS_MAPPINGS: dict = {}
 NODE_DISPLAY_NAME_MAPPINGS: dict = {}

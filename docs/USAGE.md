@@ -1,0 +1,299 @@
+# Usage Guide
+
+## Table of Contents
+- [Node Overview](#node-overview)
+- [Qwen3.5 Prompt Enhancer](#qwen35-prompt-enhancer)
+- [Qwen3.5 Reverse Prompt](#qwen35-reverse-prompt)
+- [Qwen Translator](#qwen-translator)
+- [Qwen Kontext Translator](#qwen-kontext-translator)
+- [Best Practices](#best-practices)
+- [Example Workflows](#example-workflows)
+
+## Node Overview
+
+ComfyUI-IAT provides 4 powerful nodes for text and image processing:
+
+| Node | Category | Purpose |
+|------|----------|---------|
+| Qwen3.5 Prompt Enhancer | IAT/Qwen3.5 | Enhance and optimize text prompts |
+| Qwen3.5 Reverse Prompt | IAT/Qwen3.5 | Generate prompts from images |
+| Qwen Translator | IAT/Qwen3.5 | Translate text to English |
+| Qwen Kontext Translator | IAT/Qwen3.5 | Optimize editing instructions |
+
+## Qwen3.5 Prompt Enhancer
+
+### Purpose
+Transform simple prompts into detailed, professional-grade image generation prompts.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| model_variant | Dropdown | Qwen3.5-Latest | Model size to use |
+| quantization | Dropdown | None | Quantization mode |
+| device | Dropdown | auto | Computing device |
+| prompt_text | String | "" | Input prompt to enhance |
+| enhancement_style | Dropdown | Enhance | Enhancement style |
+| custom_system_prompt | String | "" | Custom system prompt |
+| max_tokens | Int | 256 | Maximum output length |
+| temperature | Float | 0.7 | Creativity (0.0-1.5) |
+| top_p | Float | 0.9 | Nucleus sampling |
+| repetition_penalty | Float | 1.1 | Repetition penalty |
+| keep_model_loaded | Boolean | True | Keep model in memory |
+| seed | Int | 1 | Random seed |
+
+### Enhancement Styles
+
+1. **Enhance** - Expand with vivid details
+   ```
+   Input: "a girl in forest"
+   Output: "A young woman standing in a mystical forest, dappled sunlight 
+   filtering through ancient oak trees, wearing a flowing emerald dress..."
+   ```
+
+2. **Refine** - Clear and concise
+   ```
+   Input: "make a picture of a cat sitting on a mat"
+   Output: "A domestic cat sitting on a woven mat, front view, soft lighting"
+   ```
+
+3. **Creative Rewrite** - Stronger visual storytelling
+   ```
+   Input: "sunset over ocean"
+   Output: "Golden hour masterpiece: fiery orange and purple clouds reflect 
+   on mirror-calm ocean waters, distant silhouette of a lone sailboat..."
+   ```
+
+4. **Detailed Visual** - Highly detailed description
+   ```
+   Input: "cyberpunk city"
+   Output: "Futuristic cyberpunk metropolis at night, towering neon-lit 
+   skyscrapers with holographic advertisements, flying vehicles between 
+   buildings, wet streets reflecting colorful lights..."
+   ```
+
+### Example Workflow
+
+```
+[Text Input] → [Qwen3.5 Prompt Enhancer] → [CLIP Text Encode] → [KSampler]
+                    ↓
+            [Show Text]
+```
+
+## Qwen3.5 Reverse Prompt
+
+### Purpose
+Generate text prompts from input images using vision-language models.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| model_variant | Dropdown | Qwen3.5-VL-Latest | Vision model size |
+| quantization | Dropdown | None | Quantization mode |
+| device | Dropdown | auto | Computing device |
+| preset_prompt | Dropdown | Detailed Description | Analysis style |
+| custom_prompt | String | "" | Custom analysis prompt |
+| max_tokens | Int | 192 | Maximum output length |
+| temperature | Float | 0.0 | Creativity (0.0-1.5) |
+| top_p | Float | 0.9 | Nucleus sampling |
+| repetition_penalty | Float | 1.1 | Repetition penalty |
+| keep_model_loaded | Boolean | True | Keep model in memory |
+| seed | Int | 1 | Random seed |
+| image | IMAGE | optional | Primary image |
+| image_2 | IMAGE | optional | Second image |
+| image_3 | IMAGE | optional | Third image |
+| image_4 | IMAGE | optional | Fourth image |
+
+### Preset Prompts
+
+1. **Detailed Description** - Comprehensive image analysis
+   - Describes all elements, composition, lighting, style
+   - Best for understanding complex images
+
+2. **Prompt Reverse** - Compact generation prompt
+   - Outputs prompt suitable for image generation
+   - Optimized for reuse in generation workflows
+
+3. **Style Focus** - Style and technique analysis
+   - Focuses on artistic style, camera settings, lighting
+   - Best for learning and reproducing styles
+
+### Example Workflow
+
+```
+[Load Image] → [Qwen3.5 Reverse Prompt] → [Show Text]
+                    ↓
+            [CLIP Text Encode] → [KSampler] → [Save Image]
+```
+
+## Qwen Translator
+
+### Purpose
+Automatically translate Chinese or Japanese text to natural English.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| text | String | "" | Text to translate |
+| model_variant | Dropdown | Qwen3.5-Latest | Model size |
+| quantization | Dropdown | None | Quantization mode |
+| device | Dropdown | auto | Computing device |
+| max_tokens | Int | 512 | Maximum output length |
+| temperature | Float | 0.1 | Low for accuracy |
+| keep_model_loaded | Boolean | True | Keep model in memory |
+| seed | Int | 1 | Random seed |
+
+### Features
+
+- **Auto-detection** - Automatically detects Chinese or Japanese
+- **English pass-through** - Returns English input unchanged
+- **Optimized for prompts** - Translation tailored for image generation
+
+### Example
+
+```
+Input:  "一个穿着红色汉服的中国女孩"
+Output: "A Chinese girl wearing traditional red Hanfu"
+
+Input:  "美しい日本の庭園"
+Output: "A beautiful Japanese garden"
+```
+
+### Example Workflow
+
+```
+[Text Input (Chinese)] → [Qwen Translator] → [CLIP Text Encode] → [KSampler]
+```
+
+## Qwen Kontext Translator
+
+### Purpose
+Optimize editing instructions for image editing models (especially Kontext-based).
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| text | String | "" | Editing instruction |
+| model_variant | Dropdown | Qwen3.5-Latest | Model size |
+| quantization | Dropdown | None | Quantization mode |
+| device | Dropdown | auto | Computing device |
+| max_tokens | Int | 512 | Maximum output length |
+| temperature | Float | 0.0 | Low for consistency |
+| keep_model_loaded | Boolean | True | Keep model in memory |
+| seed | Int | 1 | Random seed |
+
+### Features
+
+- **Instruction optimization** - Converts vague instructions to precise prompts
+- **Consistency preservation** - Maintains identity when required
+- **Explicit output** - Clean, editable English prompts
+
+### Example
+
+```
+Input:  "把背景换成森林"
+Output: "Replace the background with a lush forest scene, maintain the 
+subject's position and lighting consistency"
+
+Input:  "add more flowers"
+Output: "Add colorful wildflowers in the foreground and midground, 
+natural distribution, complementary colors"
+```
+
+### Example Workflow
+
+```
+[Load Image] → [Qwen Kontext Translator] → [Kontext Edit Model] → [Save Image]
+      ↑
+[Text Input]
+```
+
+## Best Practices
+
+### Model Selection
+
+| VRAM Available | Recommended Model | Quantization |
+|----------------|-------------------|--------------|
+| 8GB | Qwen3.5-3B | 4-bit |
+| 12GB | Qwen3.5-7B | 8-bit |
+| 16GB+ | Qwen3.5-7B/14B | None |
+| 24GB+ | Qwen3.5-14B/32B | None |
+
+### Temperature Guidelines
+
+| Use Case | Temperature | Reason |
+|----------|-------------|--------|
+| Translation | 0.0-0.2 | Accuracy is key |
+| Prompt Enhancement | 0.6-0.8 | Balance creativity |
+| Creative Writing | 0.8-1.2 | More variation |
+| Reverse Prompt | 0.0-0.3 | Factual description |
+
+### Memory Management
+
+- Use `keep_model_loaded = True` when processing multiple items
+- Set to `False` to free VRAM between uses
+- Consider using smaller models for batch processing
+
+### Workflow Tips
+
+1. **Chain nodes together** - Use translator → enhancer for non-English prompts
+2. **Compare styles** - Try different enhancement styles to find best results
+3. **Save outputs** - Use Show Text node to save good prompts for reuse
+4. **Batch processing** - Process multiple images with same settings
+
+## Example Workflows
+
+### Workflow 1: Multi-language Prompt Enhancement
+
+```
+[Text Input (Chinese)] 
+         ↓
+[Qwen Translator] → [Show Text: Original EN]
+         ↓
+[Qwen3.5 Prompt Enhancer] → [Show Text: Enhanced]
+         ↓
+[CLIP Text Encode] → [KSampler] → [Save Image]
+```
+
+### Workflow 2: Image Analysis and Recreation
+
+```
+[Load Image]
+         ↓
+[Qwen3.5 Reverse Prompt] → [Show Text: Prompt]
+         ↓
+[CLIP Text Encode] → [KSampler] → [Save Image]
+```
+
+### Workflow 3: Style Transfer with Editing
+
+```
+[Load Image A] [Load Image B]
+         ↓              ↓
+[Qwen3.5 Reverse Prompt] (Style Focus)
+         ↓
+[Combine with editing instruction]
+         ↓
+[Qwen Kontext Translator]
+         ↓
+[Kontext Edit Model] → [Save Image]
+```
+
+### Workflow 4: Batch Prompt Enhancement
+
+```
+[Text List] → [Qwen3.5 Prompt Enhancer] → [Text List Output]
+                    ↓
+            [Iterate] → [KSampler] → [Save Image]
+```
+
+## Performance Tips
+
+1. **First load is slow** - Model downloads and loads on first use
+2. **Subsequent uses are fast** - Keep models loaded when possible
+3. **Use quantization** - Significantly reduces VRAM usage
+4. **Batch when possible** - Process multiple items in one session
+5. **Monitor VRAM** - Use system monitor to track memory usage
