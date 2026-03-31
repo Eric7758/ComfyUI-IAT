@@ -137,32 +137,33 @@ Use **Qwen Kontext Translator** for image editing:
 
 ### 📦 Model Support
 
-**Qwen3.5 - Native Multimodal Models**
+**Qwen3.5 - Native Multimodal Models for Consumer GPUs**
 
 All Qwen3.5 models support **text + image + video** input with **text** output:
 
-**Dense Models (Standard):**
-- Qwen3.5-0.8B (~0.9B parameters)
-- Qwen3.5-2B (~2B parameters)
-- Qwen3.5-4B (~5B parameters)
-- Qwen3.5-9B (~10B parameters)
-- Qwen3.5-27B (~28B parameters)
+**Small Models (4-8GB VRAM):**
+| Model | Size | VRAM (FP16) | VRAM (4-bit) | Best For |
+|-------|------|-------------|--------------|----------|
+| Qwen3.5-0.8B | ~0.9B | ~2GB | ~1GB | Fast inference, low memory |
+| Qwen3.5-2B | ~2B | ~5GB | ~2GB | Balanced speed/quality |
+| Qwen3.5-4B | ~5B | ~10GB | ~3GB | Good quality on mid-range GPUs |
 
-**MoE Models (Mixture of Experts):**
-- Qwen3.5-35B-A3B (35B total, 3B active)
-- Qwen3.5-122B-A10B (122B total, 10B active)
-- Qwen3.5-397B-A17B (397B total, 17B active)
+**Medium Models (8-16GB VRAM):**
+| Model | Size | VRAM (FP16) | VRAM (4-bit) | Best For |
+|-------|------|-------------|--------------|----------|
+| Qwen3.5-9B | ~10B | ~20GB | ~6GB | High quality, recommended |
 
-**Special Variants:**
-- Qwen3.5-Latest (auto-select best available)
-- Base models (pre-trained)
-- FP8 quantized models
-- GPTQ-Int4 quantized models
+**Large Models (16GB+ VRAM or GGUF):**
+| Model | Size | VRAM (FP16) | VRAM (4-bit) | Best For |
+|-------|------|-------------|--------------|----------|
+| Qwen3.5-27B | ~28B | ~56GB | ~16GB | Best quality, use GGUF for consumer GPUs |
 
 **Quantization Options:**
 - None (FP16/BF16) - Best quality
 - 8-bit - Reduced memory
 - 4-bit - Minimum memory
+
+**GGUF Support:** For larger models (9B, 27B) on consumer GPUs, use GGUF quantized versions from `bartowski/Qwen_Qwen3.5-*-GGUF` or `unsloth/Qwen3.5-*-GGUF`.
 
 ### 📝 Changelog
 
