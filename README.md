@@ -12,7 +12,7 @@
 
 [English](#english) | [中文](#中文)
 
-<img src="docs/images/demo.png" alt="ComfyUI-IAT Demo" width="800"/>
+<img src="docs/images/nodes.png" alt="ComfyUI-IAT Nodes" width="800"/>
 
 </div>
 
