@@ -71,7 +71,7 @@ Edit `config.yaml` to customize default settings:
 
 ```yaml
 model:
-  default_variant: "Qwen3.5-Latest"  # Default model variant
+  default_variant: "Qwen3.5-4B"    # Default model variant (0.8B/2B/4B/9B/27B)
   quantization: "None (FP16/BF16)"   # Quantization mode
   device: "auto"                      # Device: auto, cuda, cpu
 
@@ -133,7 +133,7 @@ Use **Qwen Kontext Translator** for image editing:
 - ComfyUI
 - PyTorch 2.0+
 - Transformers 4.57.0+
-- 8GB+ VRAM (16GB+ recommended for larger models)
+- 4GB+ VRAM (8GB+ recommended)
 
 ### 📦 Model Support
 
@@ -163,7 +163,21 @@ All Qwen3.5 models support **text + image + video** input with **text** output:
 - 8-bit - Reduced memory
 - 4-bit - Minimum memory
 
-**GGUF Support:** For larger models (9B, 27B) on consumer GPUs, use GGUF quantized versions from `bartowski/Qwen_Qwen3.5-*-GGUF` or `unsloth/Qwen3.5-*-GGUF`.
+**GGUF Support for Consumer GPUs:**
+
+For larger models (9B, 27B) on consumer GPUs, use GGUF quantized versions:
+
+| Quantization | 9B VRAM | 27B VRAM | Quality |
+|--------------|---------|----------|---------|
+| Q4_K_M | ~6GB | ~18GB | Good |
+| Q5_K_M | ~7GB | ~21GB | Better |
+| Q6_K | ~8GB | ~24GB | Best |
+| Q8_0 | ~10GB | ~30GB | Excellent |
+
+Recommended GGUF sources:
+- `bartowski/Qwen_Qwen3.5-9B-GGUF`
+- `bartowski/Qwen_Qwen3.5-27B-GGUF`
+- `unsloth/Qwen3.5-9B-GGUF`
 
 ### 📝 Changelog
 
@@ -232,7 +246,7 @@ bash install.sh
 
 ```yaml
 model:
-  default_variant: "Qwen3.5-Latest"  # 默认模型版本
+  default_variant: "Qwen3.5-4B"    # 默认模型版本 (0.8B/2B/4B/9B/27B)
   quantization: "None (FP16/BF16)"   # 量化模式
   device: "auto"                      # 设备: auto, cuda, cpu
 
@@ -293,38 +307,51 @@ logging:
 - ComfyUI
 - PyTorch 2.0+
 - Transformers 4.57.0+
-- 8GB+ 显存（大模型建议 16GB+）
+- 4GB+ 显存（建议 8GB+）
 
 ### 📦 模型支持
 
-**Qwen3.5 - 原生多模态模型**
+**Qwen3.5 - 面向消费级显卡的原生多模态模型**
 
 所有 Qwen3.5 模型都支持**文本 + 图像 + 视频**输入，**文本**输出：
 
-**Dense 模型（标准）：**
-- Qwen3.5-0.8B（约0.9B参数）
-- Qwen3.5-2B（约2B参数）
-- Qwen3.5-4B（约5B参数）
-- Qwen3.5-9B（约10B参数）
-- Qwen3.5-27B（约28B参数）
+**小型模型（4-8GB 显存）：**
+| 模型 | 参数量 | FP16显存 | 4-bit显存 | 适用场景 |
+|------|--------|----------|-----------|----------|
+| Qwen3.5-0.8B | ~0.9B | ~2GB | ~1GB | 快速推理、低内存 |
+| Qwen3.5-2B | ~2B | ~5GB | ~2GB | 速度与质量平衡 |
+| Qwen3.5-4B | ~5B | ~10GB | ~3GB | 中高端显卡良好质量 |
 
-**MoE 模型（混合专家）：**
-- Qwen3.5-35B-A3B（35B总参数，3B激活）
-- Qwen3.5-122B-A10B（122B总参数，10B激活）
-- Qwen3.5-397B-A17B（397B总参数，17B激活）
+**中型模型（8-16GB 显存）：**
+| 模型 | 参数量 | FP16显存 | 4-bit显存 | 适用场景 |
+|------|--------|----------|-----------|----------|
+| Qwen3.5-9B | ~10B | ~20GB | ~6GB | 高质量，推荐 |
 
-**特殊版本：**
-- Qwen3.5-Latest（自动选择最佳可用）
-- Base 模型（预训练版）
-- FP8 量化模型
-- GPTQ-Int4 量化模型
-
-**注意：** 与 Qwen2.5（有单独的文本和VL版本）不同，所有 Qwen3.5 模型都是原生多模态，采用统一的视觉-语言架构。
+**大型模型（16GB+ 显存或GGUF）：**
+| 模型 | 参数量 | FP16显存 | 4-bit显存 | 适用场景 |
+|------|--------|----------|-----------|----------|
+| Qwen3.5-27B | ~28B | ~56GB | ~16GB | 最佳质量，消费级显卡建议用GGUF |
 
 **量化选项：**
 - None (FP16/BF16) - 最佳质量
 - 8-bit - 减少内存
 - 4-bit - 最小内存
+
+**消费级显卡GGUF支持：**
+
+对于消费级显卡运行大模型（9B、27B），建议使用GGUF量化版本：
+
+| 量化等级 | 9B显存 | 27B显存 | 质量 |
+|----------|--------|---------|------|
+| Q4_K_M | ~6GB | ~18GB | 良好 |
+| Q5_K_M | ~7GB | ~21GB | 更好 |
+| Q6_K | ~8GB | ~24GB | 最佳 |
+| Q8_0 | ~10GB | ~30GB | 优秀 |
+
+推荐GGUF源：
+- `bartowski/Qwen_Qwen3.5-9B-GGUF`
+- `bartowski/Qwen_Qwen3.5-27B-GGUF`
+- `unsloth/Qwen3.5-9B-GGUF`
 
 ### 📝 更新日志
 
