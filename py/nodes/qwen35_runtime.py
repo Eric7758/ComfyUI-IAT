@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import gc
+import importlib.util
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import transformers
 from packaging import version
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
+try:
+    from transformers.utils import is_flash_attn_2_available
+except Exception:
+    def is_flash_attn_2_available():
+        return False
 
 try:
     from transformers import AutoModelForImageTextToText as AutoModelForVision2Seq
@@ -41,7 +49,15 @@ try:
 except Exception:
     model_management = None
 
+_CFG = getattr(sys.modules.get("comfyui_iat_config"), "data", {}) or {}
+_RUNTIME_CFG = (_CFG.get("runtime") or {}) if isinstance(_CFG, dict) else {}
+
 MIN_TRANSFORMERS_FOR_QWEN35 = "4.57.0"
+QWEN35_MODEL_TYPE = "qwen3_5"
+TRANSFORMERS_UPGRADE_SOURCES = (
+    "git+https://github.com/huggingface/transformers.git",
+    "https://github.com/huggingface/transformers/archive/refs/heads/main.zip",
+)
 
 # Qwen3.5 Dense Models for Consumer GPUs
 TEXT_MODEL_CANDIDATES: Dict[str, List[str]] = {
@@ -61,7 +77,35 @@ VL_MODEL_CANDIDATES: Dict[str, List[str]] = {
 }
 
 QUANT_OPTIONS = ["None (FP16/BF16)", "8-bit", "4-bit"]
-DEVICE_OPTIONS = ["auto", "cuda", "cpu", "mps"]
+DEVICE_OPTIONS = ["auto", "cuda", "cpu"]
+ATTENTION_OPTIONS = [
+    "Auto",
+    "SDPA",
+    "FlashAttention-2",
+    "Eager",
+]
+_ATTENTION_BACKEND_TO_IMPL = {
+    "Auto": None,
+    "SDPA": "sdpa",
+    "FlashAttention-2": "flash_attention_2",
+    "Eager": "eager",
+}
+_ATTENTION_BACKEND_ALIASES = {
+    "auto": "Auto",
+    "sdpa": "SDPA",
+    "flash": "FlashAttention-2",
+    "flash_attention_2": "FlashAttention-2",
+    "flash attention 2": "FlashAttention-2",
+    "flash_attention_3": "FlashAttention-2",
+    "flash attention 3": "FlashAttention-2",
+    "flash_attention_4": "FlashAttention-2",
+    "flash attention 4": "FlashAttention-2",
+    "flex_attention": "SDPA",
+    "flex attention": "SDPA",
+    "eager": "Eager",
+    "default": "Auto",
+    "transformers default": "Auto",
+}
 
 # 模型缓存 - 避免重复加载
 _MODEL_CACHE = {
@@ -71,31 +115,57 @@ _MODEL_CACHE = {
 
 # 性能优化配置
 _ATTN_IMPLEMENTATION = None  # 自动检测最佳注意力实现
+_ATTN_IMPLEMENTATION_RESOLVED = False
+_TRANSFORMERS_UPGRADE_ATTEMPTED = False
 
-def _get_optimal_attn_implementation():
+
+def _cfg_bool(name: str, default: bool) -> bool:
+    value = _RUNTIME_CFG.get(name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+AUTO_UPGRADE_TRANSFORMERS = _cfg_bool("auto_upgrade_transformers", True)
+PREFER_OPTIMIZED_ATTENTION = _cfg_bool("prefer_optimized_attention", True)
+ENABLE_TORCH_COMPILE = _cfg_bool("enable_torch_compile", False)
+DEFAULT_ATTENTION_BACKEND = "Auto"
+
+
+def _get_optimal_attn_implementation(device: str) -> Optional[str]:
     """自动检测最佳的注意力实现"""
-    global _ATTN_IMPLEMENTATION
-    if _ATTN_IMPLEMENTATION is not None:
+    global _ATTN_IMPLEMENTATION, _ATTN_IMPLEMENTATION_RESOLVED
+    if not PREFER_OPTIMIZED_ATTENTION or device != "cuda":
+        return None
+    if _ATTN_IMPLEMENTATION_RESOLVED:
         return _ATTN_IMPLEMENTATION
-    
-    # 检查 Flash Attention 2 是否可用
-    try:
-        import flash_attn
+
+    _ATTN_IMPLEMENTATION_RESOLVED = True
+
+    def _check_availability(fn, label: str) -> bool:
+        try:
+            return bool(fn())
+        except Exception as exc:
+            _log_info(f"{label} 可用性检测失败，已跳过: {exc}")
+            return False
+
+    # 优先使用 transformers 自带的 availability 检测，避免 flash_attn 包名映射异常
+    if _check_availability(is_flash_attn_2_available, "Flash Attention 2"):
         _ATTN_IMPLEMENTATION = "flash_attention_2"
         print("[IAT] 使用 Flash Attention 2 加速")
         return _ATTN_IMPLEMENTATION
-    except ImportError:
-        pass
-    
+
     # 检查是否支持 SDPA (Scaled Dot Product Attention)
-    if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
+    if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
         _ATTN_IMPLEMENTATION = "sdpa"
         print("[IAT] 使用 SDPA (Scaled Dot Product Attention) 加速")
         return _ATTN_IMPLEMENTATION
-    
-    _ATTN_IMPLEMENTATION = "eager"
-    print("[IAT] 使用标准注意力实现")
-    return _ATTN_IMPLEMENTATION
+
+    _ATTN_IMPLEMENTATION = None
+    print("[IAT] 使用 Transformers 默认注意力实现")
+    return None
 
 
 def _log_major(message: str):
@@ -110,12 +180,109 @@ def _log_warning(message: str):
     print(f"\033[93m[IAT] 警告: {message}\033[0m")
 
 
+def _normalize_attention_backend(attention_backend: Optional[str]) -> str:
+    if attention_backend in ATTENTION_OPTIONS:
+        return attention_backend
+    alias = _ATTENTION_BACKEND_ALIASES.get(str(attention_backend or "").strip().lower())
+    if alias in ATTENTION_OPTIONS:
+        return alias
+    return DEFAULT_ATTENTION_BACKEND
+
+
+def _resolve_attention_backend(attention_backend: Optional[str], device: str) -> Tuple[Optional[str], str, bool]:
+    backend = _normalize_attention_backend(attention_backend)
+    if backend == "Auto":
+        return _get_optimal_attn_implementation(device), backend, True
+    return _ATTENTION_BACKEND_TO_IMPL.get(backend), backend, False
+
+
+DEFAULT_ATTENTION_BACKEND = _normalize_attention_backend(_RUNTIME_CFG.get("default_attention_backend", "Auto"))
+
+
+def _supports_qwen35_architecture() -> bool:
+    try:
+        transformers.AutoConfig.for_model(QWEN35_MODEL_TYPE)
+        return True
+    except Exception:
+        pass
+
+    try:
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+        return QWEN35_MODEL_TYPE in CONFIG_MAPPING
+    except Exception:
+        return False
+
+
+def _manual_transformers_upgrade_command() -> str:
+    return f'"{sys.executable}" -m pip install --upgrade {TRANSFORMERS_UPGRADE_SOURCES[0]}'
+
+
+def _tail_text(text: str, lines: int = 8) -> str:
+    chunks = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return " | ".join(chunks[-lines:])
+
+
+def _attempt_transformers_upgrade() -> Tuple[bool, str]:
+    _log_major("检测到当前 transformers 缺少 Qwen3.5 架构支持，尝试自动升级源码版本")
+    errors: List[str] = []
+
+    for source in TRANSFORMERS_UPGRADE_SOURCES:
+        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", source]
+        _log_info(f"执行依赖升级: {' '.join(cmd)}")
+        try:
+            completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+            continue
+
+        if completed.returncode == 0:
+            return True, source
+
+        summary = _tail_text(completed.stderr or completed.stdout)
+        errors.append(f"{source}: {summary or f'pip exited with code {completed.returncode}'}")
+
+    return False, " | ".join(errors[-4:])
+
+
 def _check_transformers_support() -> None:
+    global _TRANSFORMERS_UPGRADE_ATTEMPTED
     current = getattr(transformers, "__version__", "0.0.0")
+    issues: List[str] = []
+
     if version.parse(current) < version.parse(MIN_TRANSFORMERS_FOR_QWEN35):
+        issues.append(f"requires transformers>={MIN_TRANSFORMERS_FOR_QWEN35} (current: {current})")
+    if not _supports_qwen35_architecture():
+        issues.append(f"current transformers build does not register the '{QWEN35_MODEL_TYPE}' architecture")
+
+    if not issues:
+        return
+
+    manual_command = _manual_transformers_upgrade_command()
+    detail = "; ".join(issues)
+
+    if AUTO_UPGRADE_TRANSFORMERS and not _TRANSFORMERS_UPGRADE_ATTEMPTED:
+        _TRANSFORMERS_UPGRADE_ATTEMPTED = True
+        upgraded, upgrade_detail = _attempt_transformers_upgrade()
+        if upgraded:
+            raise RuntimeError(
+                "[IAT] Current transformers build cannot load Qwen3.5 "
+                f"({detail}). The plugin has upgraded transformers automatically from {upgrade_detail}. "
+                "Please restart ComfyUI and run the node again."
+            )
         raise RuntimeError(
-            f"[IAT] transformers>={MIN_TRANSFORMERS_FOR_QWEN35} is required for Qwen3.5. Current version: {current}."
+            "[IAT] Current transformers build cannot load Qwen3.5 "
+            f"({detail}). Automatic upgrade failed. Run `{manual_command}` and restart ComfyUI. "
+            f"Details: {upgrade_detail}"
         )
+
+    auto_upgrade_note = ""
+    if not AUTO_UPGRADE_TRANSFORMERS:
+        auto_upgrade_note = " Automatic upgrade is disabled in config.yaml."
+    raise RuntimeError(
+        "[IAT] Current transformers build cannot load Qwen3.5 "
+        f"({detail}).{auto_upgrade_note} Run `{manual_command}` and restart ComfyUI."
+    )
 
 
 def _get_llm_dir() -> Path:
@@ -224,12 +391,10 @@ def resolve_device(device: str) -> str:
     if device == "auto":
         if torch.cuda.is_available():
             return "cuda"
-        if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-            return "mps"
         return "cpu"
     if device == "cuda" and not torch.cuda.is_available():
         return "cpu"
-    if device == "mps" and not (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()):
+    if device == "mps":
         return "cpu"
     return device
 
@@ -237,7 +402,70 @@ def resolve_device(device: str) -> str:
 def _dtype_for_device(device: str):
     if device == "cuda" and hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_bf16_supported():
         return torch.bfloat16
-    return torch.float16 if device in {"cuda", "mps"} else torch.float32
+    return torch.float16 if device == "cuda" else torch.float32
+
+
+def _variant_size_billions(variant: str) -> Optional[float]:
+    match = re.search(r"(\d+(?:\.\d+)?)B", variant or "")
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _primary_cuda_total_memory_gib() -> Optional[float]:
+    if not torch.cuda.is_available() or torch.cuda.device_count() == 0:
+        return None
+    try:
+        return torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    except Exception:
+        return None
+
+
+def _available_system_memory_gib() -> Optional[int]:
+    try:
+        pages = os.sysconf("SC_AVPHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        return max(1, int((pages * page_size) / (1024**3)))
+    except Exception:
+        return None
+
+
+def _cpu_offload_memory_budget_gib() -> Optional[int]:
+    available = _available_system_memory_gib()
+    if available is None:
+        return None
+    return max(4, int(available * 0.8))
+
+
+def _should_use_auto_device_map(variant: str, quantization: str, device: str) -> bool:
+    if device != "cuda":
+        return False
+    if quantization != "None (FP16/BF16)":
+        return True
+    size_b = _variant_size_billions(variant)
+    if size_b is None:
+        return True
+    if size_b >= 27.0:
+        return True
+    if size_b >= 9.0:
+        total_gib = _primary_cuda_total_memory_gib()
+        return total_gib is None or total_gib < 23.0
+    return False
+
+
+def _dtype_kwarg_name() -> str:
+    return "dtype" if version.parse(getattr(transformers, "__version__", "0.0.0")) >= version.parse("5.0.0") else "torch_dtype"
+
+
+def _set_model_dtype(kwargs: dict, dtype) -> None:
+    kwargs[_dtype_kwarg_name()] = dtype
+
+
+def _has_accelerate() -> bool:
+    return importlib.util.find_spec("accelerate") is not None
 
 
 def _cuda_max_memory_map(quantization: str = None, reserve_gib: int = 4):
@@ -265,6 +493,20 @@ def _cuda_max_memory_map(quantization: str = None, reserve_gib: int = 4):
         max_memory[idx] = f"{usable_gib}GiB"
         _log_info(f"GPU {idx}: 总显存 {total_gib}GB, 可用 {usable_gib}GB")
     
+    return max_memory
+
+
+def _auto_device_max_memory(variant: str, quantization: str):
+    max_memory = _cuda_max_memory_map(quantization)
+    if max_memory is None:
+        return None
+    cpu_budget = _cpu_offload_memory_budget_gib()
+    if cpu_budget is not None:
+        max_memory["cpu"] = f"{cpu_budget}GiB"
+        _log_info(f"CPU 卸载预算: {cpu_budget}GiB")
+    size_b = _variant_size_billions(variant)
+    if size_b is not None and size_b >= 27.0:
+        _log_warning("Qwen3.5-27B 在 FP16/BF16 下会启用自动分配和 CPU 卸载；24GB 单卡更推荐 4-bit/8-bit。")
     return max_memory
 
 
@@ -377,7 +619,51 @@ def unload_all_models() -> None:
     _log_major("所有模型已卸载")
 
 
-def _get_model_loading_kwargs(quantization: str, device: str, model_dir: Path):
+def _is_attention_compat_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    markers = (
+        "attn_implementation",
+        "flash_attention_2",
+        "flash_attention_3",
+        "flash_attention_4",
+        "flash attention 2",
+        "flash attention 3",
+        "flash attention 4",
+        "flash_attn",
+        "sdpa",
+        "scaled_dot_product_attention",
+    )
+    return any(marker in message for marker in markers)
+
+
+def _load_pretrained_with_fallback(
+    loader,
+    model_dir: Path,
+    kwargs: dict,
+    label: str,
+    attention_backend: str,
+    allow_attn_fallback: bool,
+):
+    try:
+        return loader.from_pretrained(str(model_dir), **kwargs)
+    except Exception as exc:
+        attn_implementation = kwargs.get("attn_implementation")
+        if attn_implementation and _is_attention_compat_error(exc):
+            if not allow_attn_fallback:
+                raise RuntimeError(
+                    f"[IAT] {label} 指定的注意力实现 `{attention_backend}` 当前环境不可用或不兼容: {exc}"
+                ) from exc
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("attn_implementation", None)
+            _log_warning(
+                f"{label} 在注意力实现 `{attention_backend}` 上加载失败，回退到 Transformers 默认实现。"
+            )
+            _log_info(f"{label} 注意力回退原因: {exc}")
+            return loader.from_pretrained(str(model_dir), **retry_kwargs)
+        raise
+
+
+def _get_model_loading_kwargs(variant: str, quantization: str, device: str, attention_backend: Optional[str]):
     """
     获取模型加载参数
     
@@ -390,8 +676,11 @@ def _get_model_loading_kwargs(quantization: str, device: str, model_dir: Path):
     kwargs = {
         "trust_remote_code": True,
         "low_cpu_mem_usage": True,
-        "attn_implementation": _get_optimal_attn_implementation(),
     }
+
+    attn_implementation, resolved_attention_backend, allow_attn_fallback = _resolve_attention_backend(attention_backend, device)
+    if attn_implementation:
+        kwargs["attn_implementation"] = attn_implementation
     
     qcfg = _quant_config(quantization)
     
@@ -399,12 +688,14 @@ def _get_model_loading_kwargs(quantization: str, device: str, model_dir: Path):
         # 量化模式
         if device != "cuda":
             raise RuntimeError("[IAT] 4-bit/8-bit quantization requires CUDA device.")
+        if not _has_accelerate():
+            raise RuntimeError("[IAT] 4-bit/8-bit quantization with automatic device placement requires accelerate. Install: pip install accelerate")
         
         kwargs["quantization_config"] = qcfg
-        kwargs["torch_dtype"] = torch.float16  # 量化时使用float16
+        _set_model_dtype(kwargs, torch.float16)  # 量化时使用float16
         
         # 关键优化：使用更好的device_map配置
-        max_memory = _cuda_max_memory_map(quantization)
+        max_memory = _auto_device_max_memory(variant, quantization)
         if max_memory:
             kwargs["max_memory"] = max_memory
             kwargs["device_map"] = "auto"
@@ -413,29 +704,40 @@ def _get_model_loading_kwargs(quantization: str, device: str, model_dir: Path):
         
         # 添加offload文件夹配置，允许CPU卸载
         kwargs["offload_folder"] = str(_get_offload_dir())
+        kwargs["offload_state_dict"] = True
         
     else:
         # 非量化模式
-        kwargs["torch_dtype"] = _dtype_for_device(device)
+        _set_model_dtype(kwargs, _dtype_for_device(device))
         if device == "cuda":
-            # 非量化时，小模型直接加载到GPU，大模型使用auto
-            kwargs["device_map"] = "auto"
-            max_memory = _cuda_max_memory_map(quantization)
-            if max_memory:
-                kwargs["max_memory"] = max_memory
-            kwargs["offload_folder"] = str(_get_offload_dir())
+            if _should_use_auto_device_map(variant, quantization, device) and _has_accelerate():
+                # accelerate 可用时，允许自动放置和溢出到 CPU
+                kwargs["device_map"] = "auto"
+                max_memory = _auto_device_max_memory(variant, quantization)
+                if max_memory:
+                    kwargs["max_memory"] = max_memory
+                kwargs["offload_folder"] = str(_get_offload_dir())
+                kwargs["offload_state_dict"] = True
+                _log_info("大模型启用 auto device_map + CPU offload。")
+            elif _should_use_auto_device_map(variant, quantization, device):
+                _log_info("模型较大但未检测到 accelerate，回退为常规 CUDA 加载。")
+            elif (_variant_size_billions(variant) or 0) >= 9.0:
+                _log_info("9B 模型在 24GB 级显卡上默认使用单卡直载，优先保证稳定性和响应速度。")
+            else:
+                _log_info("小模型默认使用常规 CUDA 加载，避免 auto device_map 带来的额外开销。")
     
-    return kwargs, qcfg
+    return kwargs, qcfg, resolved_attention_backend, allow_attn_fallback
 
 
-def load_text_model(variant: str, quantization: str, device: str):
+def load_text_model(variant: str, quantization: str, device: str, attention_backend: Optional[str] = None):
     """加载文本模型，带缓存机制"""
     _check_transformers_support()
     model_dir = ensure_model(variant, mode="text")
     run_device = resolve_device(device)
+    resolved_attention_backend = _normalize_attention_backend(attention_backend)
     
     # 创建缓存签名
-    signature = (str(model_dir), quantization, run_device)
+    signature = (str(model_dir), quantization, run_device, resolved_attention_backend)
     
     # 检查缓存
     cache = _MODEL_CACHE["text"]
@@ -453,12 +755,21 @@ def load_text_model(variant: str, quantization: str, device: str):
     tokenizer = _load_tokenizer(model_dir)
     
     # 获取加载参数
-    kwargs, qcfg = _get_model_loading_kwargs(quantization, run_device, model_dir)
+    kwargs, qcfg, resolved_attention_backend, allow_attn_fallback = _get_model_loading_kwargs(
+        variant, quantization, run_device, resolved_attention_backend
+    )
     
-    _log_major(f"正在加载文本模型: {variant} | 量化: {quantization} | 注意力: {kwargs.get('attn_implementation', 'default')}")
+    _log_major(f"正在加载文本模型: {variant} | 量化: {quantization} | 注意力: {resolved_attention_backend}")
     
     # 加载模型
-    model = AutoModelForCausalLM.from_pretrained(str(model_dir), **kwargs)
+    model = _load_pretrained_with_fallback(
+        AutoModelForCausalLM,
+        model_dir,
+        kwargs,
+        "文本模型",
+        resolved_attention_backend,
+        allow_attn_fallback,
+    )
     
     # 验证量化
     if qcfg is not None:
@@ -466,9 +777,11 @@ def load_text_model(variant: str, quantization: str, device: str):
     
     # 设置为评估模式
     model.eval()
+    if qcfg is None and not hasattr(model, "hf_device_map"):
+        model.to(run_device)
     
     # 编译模型以加速（仅CUDA，且非量化）
-    if run_device == "cuda" and qcfg is None and hasattr(torch, "compile"):
+    if ENABLE_TORCH_COMPILE and run_device == "cuda" and qcfg is None and hasattr(torch, "compile"):
         try:
             _log_info("尝试编译模型以加速推理...")
             model = torch.compile(model, mode="reduce-overhead")
@@ -485,14 +798,15 @@ def load_text_model(variant: str, quantization: str, device: str):
     return model, tokenizer, run_device
 
 
-def load_vl_model(variant: str, quantization: str, device: str):
+def load_vl_model(variant: str, quantization: str, device: str, attention_backend: Optional[str] = None):
     """加载视觉语言模型，带缓存机制"""
     _check_transformers_support()
     model_dir = ensure_model(variant, mode="vl")
     run_device = resolve_device(device)
+    resolved_attention_backend = _normalize_attention_backend(attention_backend)
     
     # 创建缓存签名
-    signature = (str(model_dir), quantization, run_device)
+    signature = (str(model_dir), quantization, run_device, resolved_attention_backend)
     
     # 检查缓存
     cache = _MODEL_CACHE["vl"]
@@ -511,12 +825,21 @@ def load_vl_model(variant: str, quantization: str, device: str):
     tokenizer = _load_tokenizer(model_dir)
     
     # 获取加载参数
-    kwargs, qcfg = _get_model_loading_kwargs(quantization, run_device, model_dir)
+    kwargs, qcfg, resolved_attention_backend, allow_attn_fallback = _get_model_loading_kwargs(
+        variant, quantization, run_device, resolved_attention_backend
+    )
     
-    _log_major(f"正在加载多模态模型: {variant} | 量化: {quantization} | 注意力: {kwargs.get('attn_implementation', 'default')}")
+    _log_major(f"正在加载多模态模型: {variant} | 量化: {quantization} | 注意力: {resolved_attention_backend}")
     
     # 加载模型
-    model = AutoModelForVision2Seq.from_pretrained(str(model_dir), **kwargs)
+    model = _load_pretrained_with_fallback(
+        AutoModelForVision2Seq,
+        model_dir,
+        kwargs,
+        "多模态模型",
+        resolved_attention_backend,
+        allow_attn_fallback,
+    )
     
     # 验证量化
     if qcfg is not None:
@@ -524,6 +847,8 @@ def load_vl_model(variant: str, quantization: str, device: str):
     
     # 设置为评估模式
     model.eval()
+    if qcfg is None and not hasattr(model, "hf_device_map"):
+        model.to(run_device)
     
     _log_major(f"多模态模型加载完成 | 规格={variant} | 设备={run_device} | 量化={quantization}")
     
@@ -541,6 +866,7 @@ def generate_text(
     variant: str,
     quantization: str,
     device: str,
+    attention_backend: Optional[str],
     messages,
     max_tokens: int,
     temperature: float,
@@ -552,7 +878,7 @@ def generate_text(
     torch.manual_seed(seed)
     
     # 加载模型（使用缓存）
-    model, tokenizer, run_device = load_text_model(variant, quantization, device)
+    model, tokenizer, run_device = load_text_model(variant, quantization, device, attention_backend)
     
     # 应用chat template
     prompt = apply_chat_template(tokenizer, messages)
@@ -579,7 +905,6 @@ def generate_text(
         "max_new_tokens": max_tokens,
         "repetition_penalty": repetition_penalty,
         "do_sample": temperature > 0,
-        "top_p": top_p,
         "pad_token_id": tokenizer.eos_token_id,
         "eos_token_id": tokenizer.eos_token_id,
         "use_cache": True,  # 使用KV缓存加速
@@ -587,6 +912,7 @@ def generate_text(
     
     if temperature > 0:
         gen_kwargs["temperature"] = max(temperature, 1e-5)
+        gen_kwargs["top_p"] = top_p
     
     # 使用torch.inference_mode()加速推理
     with torch.inference_mode():
@@ -604,6 +930,7 @@ def generate_vision_text(
     variant: str,
     quantization: str,
     device: str,
+    attention_backend: Optional[str],
     images,
     text_prompt: str,
     max_tokens: int,
@@ -616,7 +943,7 @@ def generate_vision_text(
     torch.manual_seed(seed)
     
     # 加载模型（使用缓存）
-    model, tokenizer, processor, run_device = load_vl_model(variant, quantization, device)
+    model, tokenizer, processor, run_device = load_vl_model(variant, quantization, device, attention_backend)
     
     # 处理图像
     if not isinstance(images, list):
@@ -655,7 +982,6 @@ def generate_vision_text(
         "max_new_tokens": max_tokens,
         "repetition_penalty": repetition_penalty,
         "do_sample": temperature > 0,
-        "top_p": top_p,
         "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
         "eos_token_id": tokenizer.eos_token_id,
         "use_cache": True,  # 使用KV缓存加速
@@ -663,6 +989,7 @@ def generate_vision_text(
     
     if temperature > 0:
         gen_kwargs["temperature"] = max(temperature, 1e-5)
+        gen_kwargs["top_p"] = top_p
     
     # 使用torch.inference_mode()加速推理
     with torch.inference_mode():

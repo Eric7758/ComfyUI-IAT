@@ -4,6 +4,8 @@ import sys
 from PIL import Image
 
 from .qwen35_runtime import (
+    ATTENTION_OPTIONS,
+    DEFAULT_ATTENTION_BACKEND,
     DEVICE_OPTIONS,
     QUANT_OPTIONS,
     TEXT_MODEL_CANDIDATES,
@@ -15,9 +17,10 @@ from .qwen35_runtime import (
 
 _CFG = getattr(sys.modules.get("comfyui_iat_config"), "data", {}) or {}
 _MODEL_CFG = (_CFG.get("model") or {}) if isinstance(_CFG, dict) else {}
-_DEFAULT_VARIANT = _MODEL_CFG.get("default_variant", "Qwen3.5-0.8B")
+_DEFAULT_VARIANT = _MODEL_CFG.get("default_variant", "Qwen3.5-2B")
 _DEFAULT_QUANT = _MODEL_CFG.get("quantization", "None (FP16/BF16)")
 _DEFAULT_DEVICE = _MODEL_CFG.get("device", "auto")
+TRANSLATION_TARGET_OPTIONS = ["English", "Chinese"]
 
 PROMPT_STYLES = {
     "Enhance": "Expand and enrich this prompt with vivid details while keeping the original intent.",
@@ -77,12 +80,14 @@ class Qwen35PromptEnhancerNode:
         default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else list(TEXT_MODEL_CANDIDATES.keys())[0]
         default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"
         default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"
+        default_attention_backend = DEFAULT_ATTENTION_BACKEND if DEFAULT_ATTENTION_BACKEND in ATTENTION_OPTIONS else "Auto"
         
         return {
             "required": {
                 "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": default_variant}),
                 "quantization": (QUANT_OPTIONS, {"default": default_quant}),
                 "device": (DEVICE_OPTIONS, {"default": default_device}),
+                "attention_backend": (ATTENTION_OPTIONS, {"default": default_attention_backend}),
                 "prompt_text": ("STRING", {"default": "", "multiline": True}),
                 "enhancement_style": (list(PROMPT_STYLES.keys()), {"default": "Enhance"}),
                 "custom_system_prompt": ("STRING", {"default": "", "multiline": True}),
@@ -105,6 +110,7 @@ class Qwen35PromptEnhancerNode:
         model_variant,
         quantization,
         device,
+        attention_backend,
         prompt_text,
         enhancement_style,
         custom_system_prompt,
@@ -122,6 +128,7 @@ class Qwen35PromptEnhancerNode:
             variant=model_variant,
             quantization=quantization,
             device=device,
+            attention_backend=attention_backend,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -145,12 +152,14 @@ class Qwen35ReversePromptNode:
         default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in VL_MODEL_CANDIDATES else list(VL_MODEL_CANDIDATES.keys())[0]
         default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"
         default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"
+        default_attention_backend = DEFAULT_ATTENTION_BACKEND if DEFAULT_ATTENTION_BACKEND in ATTENTION_OPTIONS else "Auto"
         
         return {
             "required": {
                 "model_variant": (list(VL_MODEL_CANDIDATES.keys()), {"default": default_variant}),
                 "quantization": (QUANT_OPTIONS, {"default": default_quant}),
                 "device": (DEVICE_OPTIONS, {"default": default_device}),
+                "attention_backend": (ATTENTION_OPTIONS, {"default": default_attention_backend}),
                 "preset_prompt": (list(REVERSE_PRESETS.keys()), {"default": "Detailed Description"}),
                 "custom_prompt": ("STRING", {"default": "", "multiline": True}),
                 "max_tokens": ("INT", {"default": 192, "min": 64, "max": 2048}),
@@ -178,6 +187,7 @@ class Qwen35ReversePromptNode:
         model_variant,
         quantization,
         device,
+        attention_backend,
         preset_prompt,
         custom_prompt,
         max_tokens,
@@ -201,6 +211,7 @@ class Qwen35ReversePromptNode:
             variant=model_variant,
             quantization=quantization,
             device=device,
+            attention_backend=attention_backend,
             images=pil_images,
             text_prompt=text_prompt,
             max_tokens=max_tokens,
@@ -222,13 +233,16 @@ class QwenTranslatorNode:
         default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else list(TEXT_MODEL_CANDIDATES.keys())[0]
         default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"
         default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"
+        default_attention_backend = DEFAULT_ATTENTION_BACKEND if DEFAULT_ATTENTION_BACKEND in ATTENTION_OPTIONS else "Auto"
         
         return {
             "required": {
                 "text": ("STRING", {"multiline": True, "default": "Please input text to translate."}),
+                "target_language": (TRANSLATION_TARGET_OPTIONS, {"default": "English"}),
                 "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": default_variant}),
                 "quantization": (QUANT_OPTIONS, {"default": default_quant}),
                 "device": (DEVICE_OPTIONS, {"default": default_device}),
+                "attention_backend": (ATTENTION_OPTIONS, {"default": default_attention_backend}),
                 "max_tokens": ("INT", {"default": 512, "min": 32, "max": 2048}),
                 "temperature": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.5}),
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
@@ -241,23 +255,26 @@ class QwenTranslatorNode:
     FUNCTION = "translate"
     CATEGORY = "IAT/Qwen3.5"
 
-    def translate(self, text, model_variant, quantization, device, max_tokens, temperature, keep_model_loaded, seed):
+    def translate(self, text, target_language, model_variant, quantization, device, attention_backend, max_tokens, temperature, keep_model_loaded, seed):
         src = (text or "").strip()
         if not src:
             return ("",)
 
         lang = _detect_language(src)
-        if lang == "en":
+        target_code = "en" if target_language == "English" else "zh"
+        if lang == target_code:
             return (src,)
 
+        target_prompt = "natural English" if target_code == "en" else "自然流畅的中文"
         response = generate_text(
             variant=model_variant,
             quantization=quantization,
             device=device,
+            attention_backend=attention_backend,
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a professional translator. Translate Chinese/Japanese to natural English. Return only the translation.",
+                    "content": f"You are a professional translator. Translate the user text to {target_prompt}. Return only the translation.",
                 },
                 {"role": "user", "content": src},
             ],
@@ -280,6 +297,7 @@ class QwenKontextTranslatorNode:
         default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else list(TEXT_MODEL_CANDIDATES.keys())[0]
         default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"
         default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"
+        default_attention_backend = DEFAULT_ATTENTION_BACKEND if DEFAULT_ATTENTION_BACKEND in ATTENTION_OPTIONS else "Auto"
         
         return {
             "required": {
@@ -287,6 +305,7 @@ class QwenKontextTranslatorNode:
                 "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": default_variant}),
                 "quantization": (QUANT_OPTIONS, {"default": default_quant}),
                 "device": (DEVICE_OPTIONS, {"default": default_device}),
+                "attention_backend": (ATTENTION_OPTIONS, {"default": default_attention_backend}),
                 "max_tokens": ("INT", {"default": 512, "min": 32, "max": 2048}),
                 "temperature": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.5}),
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
@@ -299,7 +318,7 @@ class QwenKontextTranslatorNode:
     FUNCTION = "optimize_prompt"
     CATEGORY = "IAT/Qwen3.5"
 
-    def optimize_prompt(self, text, model_variant, quantization, device, max_tokens, temperature, keep_model_loaded, seed):
+    def optimize_prompt(self, text, model_variant, quantization, device, attention_backend, max_tokens, temperature, keep_model_loaded, seed):
         src = (text or "").strip()
         if not src:
             return ("",)
@@ -308,6 +327,7 @@ class QwenKontextTranslatorNode:
             variant=model_variant,
             quantization=quantization,
             device=device,
+            attention_backend=attention_backend,
             messages=[
                 {"role": "system", "content": KONTEXT_SYSTEM_PROMPT},
                 {"role": "user", "content": src},

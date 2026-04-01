@@ -17,7 +17,7 @@
 ### Recommended Requirements
 - Python 3.10+
 - 16GB+ RAM
-- 16GB+ VRAM (for 7B+ models)
+- 16GB+ VRAM (for 9B+ models)
 - CUDA-capable GPU
 
 ## Installation Methods
@@ -44,7 +44,7 @@ git clone https://github.com/Eric7758/ComfyUI-IAT.git
 cd ComfyUI-IAT
 
 # Install dependencies
-pip install -r requirements.txt
+python install.py
 ```
 
 ### Method 3: Using Install Scripts
@@ -70,9 +70,15 @@ Edit `config.yaml` in the plugin root directory:
 
 ```yaml
 model:
-  default_variant: "Qwen3.5-Latest"
+  default_variant: "Qwen3.5-2B"
   quantization: "None (FP16/BF16)"
   device: "auto"
+
+runtime:
+  default_attention_backend: "Auto"
+  auto_upgrade_transformers: true
+  prefer_optimized_attention: true
+  enable_torch_compile: false
 
 logging:
   verbose: false
@@ -82,11 +88,10 @@ logging:
 
 #### Model Variants
 - `Qwen3.5-0.8B` - Fastest, lowest quality
-- `Qwen3.5-3B` - Balanced speed/quality
-- `Qwen3.5-7B` - Good quality
-- `Qwen3.5-14B` - High quality
-- `Qwen3.5-32B` - Best quality
-- `Qwen3.5-Latest` - Auto-select latest
+- `Qwen3.5-2B` - Balanced speed/quality
+- `Qwen3.5-4B` - Good quality for mid-range GPUs
+- `Qwen3.5-9B` - High quality
+- `Qwen3.5-27B` - Best quality, requires large VRAM or aggressive quantization
 
 #### Quantization Options
 - `None (FP16/BF16)` - Best quality, highest VRAM
@@ -116,12 +121,19 @@ Download sources (in order):
 #### Issue: "Module not found" error
 **Solution:**
 ```bash
-pip install -r requirements.txt
+python install.py
 ```
+
+#### Issue: `model type 'qwen3_5' but Transformers does not recognize this architecture`
+**Solution:**
+```bash
+python install.py
+```
+If the plugin auto-upgrades `transformers` during runtime, restart ComfyUI once and run the node again.
 
 #### Issue: "CUDA out of memory"
 **Solutions:**
-1. Use smaller model variant (e.g., 0.8B or 3B)
+1. Use smaller model variant (e.g., 0.8B or 2B)
 2. Enable quantization (8-bit or 4-bit)
 3. Close other GPU-intensive applications
 

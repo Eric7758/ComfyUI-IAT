@@ -52,7 +52,7 @@ git clone https://github.com/Eric7758/ComfyUI-IAT.git
 
 # Install dependencies
 cd ComfyUI-IAT
-pip install -r requirements.txt
+python install.py
 ```
 
 **Method 3: Using Install Scripts**
@@ -71,9 +71,15 @@ Edit `config.yaml` to customize default settings:
 
 ```yaml
 model:
-  default_variant: "Qwen3.5-4B"    # Default model variant (0.8B/2B/4B/9B/27B)
+  default_variant: "Qwen3.5-2B"    # Default model variant (0.8B/2B/4B/9B/27B)
   quantization: "None (FP16/BF16)"   # Quantization mode
   device: "auto"                      # Device: auto, cuda, cpu
+
+runtime:
+  default_attention_backend: "Auto"  # Auto / SDPA / FlashAttention-2 / Eager
+  auto_upgrade_transformers: true     # Auto-install latest transformers source build if qwen3_5 is missing
+  prefer_optimized_attention: true    # Try FlashAttention2/SDPA first, then fall back automatically
+  enable_torch_compile: false         # Conservative default; enable only if your torch/cuda stack is stable
 
 logging:
   verbose: false                      # Enable verbose logging
@@ -116,7 +122,7 @@ Use **Qwen3.5 Reverse Prompt** to generate prompts from images:
 Use **Qwen Translator** for automatic translation:
 
 - Auto-detects Chinese/Japanese
-- Translates to natural English
+- Can translate to natural English or Chinese
 - Optimized for image generation prompts
 
 #### 4. Editing Optimization
@@ -132,7 +138,7 @@ Use **Qwen Kontext Translator** for image editing:
 - Python 3.8+
 - ComfyUI
 - PyTorch 2.0+
-- Transformers 4.57.0+
+- Transformers 4.57.0+ (if the installed build still lacks `qwen3_5`, the plugin will auto-upgrade from source and ask for a restart)
 - 4GB+ VRAM (8GB+ recommended)
 
 ### 📦 Model Support
@@ -227,7 +233,7 @@ git clone https://github.com/Eric7758/ComfyUI-IAT.git
 
 # 安装依赖
 cd ComfyUI-IAT
-pip install -r requirements.txt
+python install.py
 ```
 
 **方法 3：使用安装脚本**
@@ -246,9 +252,15 @@ bash install.sh
 
 ```yaml
 model:
-  default_variant: "Qwen3.5-4B"    # 默认模型版本 (0.8B/2B/4B/9B/27B)
+  default_variant: "Qwen3.5-2B"    # 默认模型版本 (0.8B/2B/4B/9B/27B)
   quantization: "None (FP16/BF16)"   # 量化模式
   device: "auto"                      # 设备: auto, cuda, cpu
+
+runtime:
+  default_attention_backend: "Auto"     # Auto / SDPA / FlashAttention-2 / Eager
+  auto_upgrade_transformers: true     # 若缺少 qwen3_5 架构支持，则自动安装最新版 transformers 源码包
+  prefer_optimized_attention: true    # 优先尝试 FlashAttention2/SDPA，失败时自动回退
+  enable_torch_compile: false         # 保守默认值；仅在 torch/cuda 环境稳定时开启
 
 logging:
   verbose: false                      # 启用详细日志
@@ -290,7 +302,7 @@ logging:
 使用 **Qwen 翻译器** 进行自动翻译：
 
 - 自动检测中文/日文
-- 翻译成自然流畅的英文
+- 可选择翻译为自然流畅的英文或中文
 - 针对图像生成提示词优化
 
 #### 4. 编辑优化
@@ -306,7 +318,7 @@ logging:
 - Python 3.8+
 - ComfyUI
 - PyTorch 2.0+
-- Transformers 4.57.0+
+- Transformers 4.57.0+（如果当前安装包仍不识别 `qwen3_5`，插件会自动升级源码版并提示重启）
 - 4GB+ 显存（建议 8GB+）
 
 ### 📦 模型支持

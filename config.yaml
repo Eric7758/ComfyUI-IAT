@@ -1,7 +1,13 @@
 model:
-  default_variant: "Qwen3.5-Latest"
+  default_variant: "Qwen3.5-2B"
   quantization: "None (FP16/BF16)"
-  device: "auto"  # auto / cuda / cpu / mps
+  device: "auto"  # auto / cuda / cpu
+
+runtime:
+  default_attention_backend: "Auto"  # Auto / SDPA / FlashAttention-2 / Eager
+  auto_upgrade_transformers: true  # Missing qwen3_5 support -> auto install latest transformers source build
+  prefer_optimized_attention: true  # Try FlashAttention2/SDPA first, fall back automatically if unsupported
+  enable_torch_compile: false  # Conservative default; enable only if your torch/cuda stack is stable
 
 logging:
   verbose: false

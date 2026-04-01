@@ -17,6 +17,5 @@ elif [[ -f "../../python/bin/python3" ]]; then
 fi
 
 echo "[IAT] Using Python: $PYTHON_EXE"
-"$PYTHON_EXE" -m pip install -r "$REQ"
+"$PYTHON_EXE" install.py
 echo "[IAT] Done."
-
