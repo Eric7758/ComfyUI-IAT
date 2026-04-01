@@ -1,4 +1,4 @@
-﻿import re
+import re
 import sys
 
 from PIL import Image
@@ -73,11 +73,16 @@ def _detect_language(text: str):
 class Qwen35PromptEnhancerNode:
     @classmethod
     def INPUT_TYPES(cls):
+        # 获取默认模型，如果不存在则使用第一个可用模型
+        default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else list(TEXT_MODEL_CANDIDATES.keys())[0]
+        default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"
+        default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"
+        
         return {
             "required": {
-                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else "Qwen3.5-Latest"}),
-                "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
-                "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
+                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": default_variant}),
+                "quantization": (QUANT_OPTIONS, {"default": default_quant}),
+                "device": (DEVICE_OPTIONS, {"default": default_device}),
                 "prompt_text": ("STRING", {"default": "", "multiline": True}),
                 "enhancement_style": (list(PROMPT_STYLES.keys()), {"default": "Enhance"}),
                 "custom_system_prompt": ("STRING", {"default": "", "multiline": True}),
@@ -136,11 +141,16 @@ class Qwen35PromptEnhancerNode:
 class Qwen35ReversePromptNode:
     @classmethod
     def INPUT_TYPES(cls):
+        # 获取默认模型，如果不存在则使用第一个可用模型
+        default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in VL_MODEL_CANDIDATES else list(VL_MODEL_CANDIDATES.keys())[0]
+        default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"
+        default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"
+        
         return {
             "required": {
-                "model_variant": (list(VL_MODEL_CANDIDATES.keys()), {"default": _DEFAULT_VARIANT if _DEFAULT_VARIANT in VL_MODEL_CANDIDATES else "Qwen3.5-Latest"}),
-                "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
-                "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
+                "model_variant": (list(VL_MODEL_CANDIDATES.keys()), {"default": default_variant}),
+                "quantization": (QUANT_OPTIONS, {"default": default_quant}),
+                "device": (DEVICE_OPTIONS, {"default": default_device}),
                 "preset_prompt": (list(REVERSE_PRESETS.keys()), {"default": "Detailed Description"}),
                 "custom_prompt": ("STRING", {"default": "", "multiline": True}),
                 "max_tokens": ("INT", {"default": 192, "min": 64, "max": 2048}),
@@ -208,12 +218,17 @@ class Qwen35ReversePromptNode:
 class QwenTranslatorNode:
     @classmethod
     def INPUT_TYPES(cls):
+        # 获取默认模型，如果不存在则使用第一个可用模型
+        default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else list(TEXT_MODEL_CANDIDATES.keys())[0]
+        default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"
+        default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"
+        
         return {
             "required": {
                 "text": ("STRING", {"multiline": True, "default": "Please input text to translate."}),
-                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else "Qwen3.5-Latest"}),
-                "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
-                "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
+                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": default_variant}),
+                "quantization": (QUANT_OPTIONS, {"default": default_quant}),
+                "device": (DEVICE_OPTIONS, {"default": default_device}),
                 "max_tokens": ("INT", {"default": 512, "min": 32, "max": 2048}),
                 "temperature": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.5}),
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
@@ -261,12 +276,17 @@ class QwenTranslatorNode:
 class QwenKontextTranslatorNode:
     @classmethod
     def INPUT_TYPES(cls):
+        # 获取默认模型，如果不存在则使用第一个可用模型
+        default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else list(TEXT_MODEL_CANDIDATES.keys())[0]
+        default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"
+        default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"
+        
         return {
             "required": {
                 "text": ("STRING", {"multiline": True, "default": "Please input editing instruction."}),
-                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else "Qwen3.5-Latest"}),
-                "quantization": (QUANT_OPTIONS, {"default": _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "None (FP16/BF16)"}),
-                "device": (DEVICE_OPTIONS, {"default": _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "auto"}),
+                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": default_variant}),
+                "quantization": (QUANT_OPTIONS, {"default": default_quant}),
+                "device": (DEVICE_OPTIONS, {"default": default_device}),
                 "max_tokens": ("INT", {"default": 512, "min": 32, "max": 2048}),
                 "temperature": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.5}),
                 "keep_model_loaded": ("BOOLEAN", {"default": True}),
@@ -321,4 +341,3 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "QwenTranslator by IAT": "Qwen 翻译器（IAT）",
     "QwenKontextTranslator by IAT": "Qwen 编辑提示词优化（IAT）",
 }
-
