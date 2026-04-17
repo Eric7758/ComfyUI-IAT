@@ -13,7 +13,7 @@ import os
 import sys
 from typing import Iterable
 
-__version__ = "1.21.0"
+__version__ = "1.22.0"
 WEB_DIRECTORY = "./js"
 
 NODE_CLASS_MAPPINGS: dict = {}

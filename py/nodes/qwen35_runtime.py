@@ -53,7 +53,7 @@ _CFG = getattr(sys.modules.get("comfyui_iat_config"), "data", {}) or {}
 _RUNTIME_CFG = (_CFG.get("runtime") or {}) if isinstance(_CFG, dict) else {}
 _LOGGING_CFG = (_CFG.get("logging") or {}) if isinstance(_CFG, dict) else {}
 
-MIN_TRANSFORMERS_FOR_QWEN35 = "4.57.0"
+MIN_TRANSFORMERS_FOR_QWEN35 = "5.2.0"
 QWEN35_MODEL_TYPE = "qwen3_5"
 TRANSFORMERS_UPGRADE_SOURCES = (
     "git+https://github.com/huggingface/transformers.git",

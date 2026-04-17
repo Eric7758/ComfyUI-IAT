@@ -88,7 +88,7 @@ openai:
   api_key: ""                            # Optional. Prefer OPENAI_API_KEY env var
   api_key_env: "OPENAI_API_KEY"         # Environment variable name used when api_key is empty
   timeout_seconds: 60                    # HTTP timeout for vision API requests
-  user_agent: "ComfyUI-IAT/1.21"        # Override only if your proxy requires a custom client signature
+  user_agent: "ComfyUI-IAT/1.22"        # Override only if your proxy requires a custom client signature
 
 logging:
   verbose: false                      # Enable verbose logging
@@ -182,7 +182,7 @@ Use **Qwen Kontext Translator** for image editing:
 - Python 3.8+
 - ComfyUI
 - PyTorch 2.0+
-- Transformers 4.57.0+ (if the installed build still lacks `qwen3_5`, the plugin will auto-upgrade from source and ask for a restart)
+- Transformers 5.2.0+ (if the installed build still lacks `qwen3_5`, the plugin will auto-upgrade from source and ask for a restart)
 - 4GB+ VRAM (8GB+ recommended)
 
 ### 📦 Model Support
@@ -315,7 +315,7 @@ openai:
   api_key: ""                            # 可选。更推荐使用环境变量
   api_key_env: "OPENAI_API_KEY"         # 当 api_key 为空时读取的环境变量名
   timeout_seconds: 60                    # 视觉 API 请求超时时间（秒）
-  user_agent: "ComfyUI-IAT/1.21"        # 仅当代理网关要求自定义客户端标识时再修改
+  user_agent: "ComfyUI-IAT/1.22"        # 仅当代理网关要求自定义客户端标识时再修改
 
 logging:
   verbose: false                      # 启用详细日志
@@ -408,7 +408,7 @@ qwen_compatible:
 - Python 3.8+
 - ComfyUI
 - PyTorch 2.0+
-- Transformers 4.57.0+（如果当前安装包仍不识别 `qwen3_5`，插件会自动升级源码版并提示重启）
+- Transformers 5.2.0+（如果当前安装包仍不识别 `qwen3_5`，插件会自动升级源码版并提示重启）
 - 4GB+ 显存（建议 8GB+）
 
 ### 📦 模型支持

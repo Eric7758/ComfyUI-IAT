@@ -92,7 +92,7 @@ openai:
   api_key: ""
   api_key_env: "OPENAI_API_KEY"
   timeout_seconds: 60
-  user_agent: "ComfyUI-IAT/1.21"
+  user_agent: "ComfyUI-IAT/1.22"
 
 logging:
   verbose: false

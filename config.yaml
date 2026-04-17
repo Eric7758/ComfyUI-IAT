@@ -15,7 +15,7 @@ openai:
   api_key: "sk-99101041d4e870dc88517f522fdf3de7b51e19475f447619b078b4542a8651f9"  # Optional. Prefer environment variables for secrets.
   api_key_env: ""
   timeout_seconds: 90
-  user_agent: "ComfyUI-IAT/1.21"
+  user_agent: "ComfyUI-IAT/1.22"
 
 logging:
   verbose: false

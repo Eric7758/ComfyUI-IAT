@@ -2,7 +2,8 @@
 ## 说明：transformers 版本过旧可能不支持 qwen3_5 架构；插件在运行时也会做兼容检测并尝试自动升级。
 
 # Qwen3.5 文本/多模态模型推理框架
-transformers>=4.57.0
+# 说明：Qwen3.5 架构在 transformers v5.2.0 起稳定支持
+transformers>=5.2.0
 
 # 基础推理与图像处理依赖（在部分 ComfyUI 环境中可能未预装完整）
 torch>=2.0.0
