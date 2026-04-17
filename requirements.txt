@@ -1,8 +1,13 @@
-## ComfyUI-IAT 最小额外依赖（不重复声明 ComfyUI 已内置的 torch/numpy/pillow）
-## 说明：如你使用精简版 ComfyUI 环境，缺失基础科学计算依赖时请自行补装。
+## ComfyUI-IAT 运行依赖（包含基础科学计算依赖，避免环境差异）
+## 说明：transformers 版本过旧可能不支持 qwen3_5 架构；插件在运行时也会做兼容检测并尝试自动升级。
 
 # Qwen3.5 文本/多模态模型推理框架
 transformers>=4.57.0
+
+# 基础推理与图像处理依赖（在部分 ComfyUI 环境中可能未预装完整）
+torch>=2.0.0
+Pillow>=9.0.0
+numpy>=1.21.0
 
 # 插件配置读取（config.yaml）
 PyYAML>=6.0

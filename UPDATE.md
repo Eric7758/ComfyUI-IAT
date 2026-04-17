@@ -1,5 +1,15 @@
 # Update Notes
 
+## 2026-04-17 (v1.21.0)
+
+### 1) 版本号更新
+- 插件版本更新到 `1.21.0`。
+- 默认 `user_agent` 更新为 `ComfyUI-IAT/1.21`。
+
+### 2) 依赖声明调整
+- 恢复基础依赖声明：`torch`、`numpy`、`Pillow`。
+- 保留并强调 `transformers>=4.57.0`，降低 `qwen3_5` 架构不兼容风险。
+
 ## 2026-04-17 (v1.2.0)
 
 ### 1) 插件结构精简
@@ -8,8 +18,7 @@
 - 补充中文注释与说明，提升可读性。
 
 ### 2) 依赖与发布信息统一
-- `requirements.txt` 精简为插件额外依赖，不再重复声明 ComfyUI 常见内置依赖。
-- `pyproject.toml` 版本更新到 `1.2.0`，依赖与 `requirements.txt` 对齐。
+- `requirements.txt` 与 `pyproject.toml` 依赖保持一致。
 - 默认 `user_agent` 更新为 `ComfyUI-IAT/1.2`。
 
 ### 3) 测试节点隔离

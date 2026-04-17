@@ -3,7 +3,7 @@
 > 中文速览（精简版）
 >
 > - 推荐环境：`Python 3.10+`、已安装 `ComfyUI`、NVIDIA GPU（可选）。
-> - 最小额外依赖见根目录 `requirements.txt`，已去除 ComfyUI 常见内置依赖（`torch/numpy/Pillow`）。
+> - 完整依赖见根目录 `requirements.txt`，其中包含 `torch/numpy/Pillow` 等基础依赖，适配更多 ComfyUI 环境。
 > - 首次安装后请重启 ComfyUI；若提示 `qwen3_5` 架构缺失，执行一次 `python install.py` 并重启。
 
 ## Table of Contents
@@ -92,7 +92,7 @@ openai:
   api_key: ""
   api_key_env: "OPENAI_API_KEY"
   timeout_seconds: 60
-  user_agent: "ComfyUI-IAT/1.2"
+  user_agent: "ComfyUI-IAT/1.21"
 
 logging:
   verbose: false

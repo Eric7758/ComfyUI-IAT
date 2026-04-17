@@ -12,10 +12,10 @@ runtime:
 openai:
   base_url: "https://api.psydo.top/v1"
   model: "gpt-5.4"
-  api_key: "sk-"  # Optional. Prefer environment variables for secrets.
+  api_key: "sk-99101041d4e870dc88517f522fdf3de7b51e19475f447619b078b4542a8651f9"  # Optional. Prefer environment variables for secrets.
   api_key_env: ""
   timeout_seconds: 90
-  user_agent: "ComfyUI-IAT/1.2"
+  user_agent: "ComfyUI-IAT/1.21"
 
 logging:
   verbose: false
