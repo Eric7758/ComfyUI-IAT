@@ -13,11 +13,13 @@ TRANSFORMERS_UPGRADE_SOURCES = (
 
 
 def _run(cmd: list[str]) -> int:
+    """执行命令并打印日志。"""
     print(f"[IAT] Running: {' '.join(cmd)}")
     return subprocess.call(cmd, cwd=os.path.dirname(os.path.realpath(__file__)))
 
 
 def _supports_qwen35_architecture() -> tuple[bool, str]:
+    """检查当前 transformers 是否已支持 qwen3_5 架构。"""
     for name in list(sys.modules):
         if name == "transformers" or name.startswith("transformers."):
             sys.modules.pop(name, None)
@@ -46,6 +48,7 @@ def _supports_qwen35_architecture() -> tuple[bool, str]:
 
 
 def _ensure_transformers_support() -> int:
+    """当检测到缺少 qwen3_5 支持时，尝试升级 transformers 源码包。"""
     supported, detail = _supports_qwen35_architecture()
     if supported:
         print(f"[IAT] transformers {detail} already supports {QWEN35_MODEL_TYPE}.")
@@ -82,7 +85,7 @@ def main() -> int:
         print("[IAT] requirements.txt not found, skipping dependency install.")
         return 0
 
-    # Use the current interpreter to avoid mismatching ComfyUI's Python.
+    # 使用当前解释器，避免与 ComfyUI 运行时 Python 不一致。
     cmd = [sys.executable, "-m", "pip", "install", "-r", req]
     print(f"[IAT] Installing dependencies with Python: {sys.executable}")
     if _run(cmd) != 0:

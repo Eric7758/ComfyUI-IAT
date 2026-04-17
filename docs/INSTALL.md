@@ -1,5 +1,11 @@
 # Installation Guide
 
+> 中文速览（精简版）
+>
+> - 推荐环境：`Python 3.10+`、已安装 `ComfyUI`、NVIDIA GPU（可选）。
+> - 最小额外依赖见根目录 `requirements.txt`，已去除 ComfyUI 常见内置依赖（`torch/numpy/Pillow`）。
+> - 首次安装后请重启 ComfyUI；若提示 `qwen3_5` 架构缺失，执行一次 `python install.py` 并重启。
+
 ## Table of Contents
 - [System Requirements](#system-requirements)
 - [Installation Methods](#installation-methods)
@@ -71,17 +77,48 @@ Edit `config.yaml` in the plugin root directory:
 ```yaml
 model:
   default_variant: "Qwen3.5-2B"
-  quantization: "None (FP16/BF16)"
-  device: "auto"
+  quantization: "无"
+  device: "cuda"
 
 runtime:
-  default_attention_backend: "Auto"
+  default_attention_backend: "SDPA"
   auto_upgrade_transformers: true
   prefer_optimized_attention: true
   enable_torch_compile: false
 
+openai:
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4.1-mini"
+  api_key: ""
+  api_key_env: "OPENAI_API_KEY"
+  timeout_seconds: 60
+  user_agent: "ComfyUI-IAT/1.2"
+
 logging:
   verbose: false
+```
+
+For secrets, you can write the API key directly into `config.yaml`:
+
+```yaml
+openai:
+  api_key: "sk-your-api-key"
+```
+
+Optional provider-specific sections:
+
+```yaml
+gemini:
+  base_url: "https://generativelanguage.googleapis.com/v1beta"
+  model: "gemini-2.5-flash"
+  api_key: ""
+  api_key_env: "GEMINI_API_KEY"
+
+qwen_compatible:
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "qwen-vl-plus"
+  api_key: ""
+  api_key_env: "DASHSCOPE_API_KEY"
 ```
 
 ### Configuration Options
@@ -94,14 +131,20 @@ logging:
 - `Qwen3.5-27B` - Best quality, requires large VRAM or aggressive quantization
 
 #### Quantization Options
-- `None (FP16/BF16)` - Best quality, highest VRAM
+- `无` - Best quality, highest VRAM
 - `8-bit` - Good quality, medium VRAM
 - `4-bit` - Acceptable quality, lowest VRAM
 
 #### Device Options
-- `auto` - Automatically select best device
 - `cuda` - Use NVIDIA GPU
 - `cpu` - Use CPU (slower)
+
+#### Vision API Reverse Prompt Configuration
+- For `OpenAI-Compatible`, configure the `openai` section in `config.yaml`
+- For `Gemini`, you can add a `gemini` section with `base_url`, `model`, `api_key`, and `api_key_env`
+- For `Qwen OpenAI-Compatible`, you can add a `qwen_compatible` section with `base_url`, `model`, `api_key`, and `api_key_env`
+- If the matching provider section and node input are both empty, the node falls back to that provider's environment variable
+- Override `openai.user_agent` only if your proxy/WAF requires a custom client signature
 
 ### First Run
 

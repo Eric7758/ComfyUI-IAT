@@ -1,5 +1,21 @@
 # Update Notes
 
+## 2026-04-17 (v1.2.0)
+
+### 1) 插件结构精简
+- 重构根入口加载逻辑，拆分配置读取与节点注册函数，便于维护。
+- 清理废弃空壳模块 `py/nodes/llm_nodes.py`。
+- 补充中文注释与说明，提升可读性。
+
+### 2) 依赖与发布信息统一
+- `requirements.txt` 精简为插件额外依赖，不再重复声明 ComfyUI 常见内置依赖。
+- `pyproject.toml` 版本更新到 `1.2.0`，依赖与 `requirements.txt` 对齐。
+- 默认 `user_agent` 更新为 `ComfyUI-IAT/1.2`。
+
+### 3) 测试节点隔离
+- 从 IAT 插件移除 XYZ 测试节点文件，避免混入 IAT 节点组。
+- XYZ 测试节点独立放在 `ComfyUI-XYZ_test`，分类与 IAT 分组隔离。
+
 ## 2026-03-24
 
 ### 1) LLM 全面重构为 Qwen3.5 统一运行时

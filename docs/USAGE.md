@@ -1,9 +1,16 @@
 # Usage Guide
 
+> 中文速览（精简版）
+>
+> - 节点分类不变：`IAT/Qwen3.5`、`IAT/Vision API`、`IAT/Image`、`IAT/Input`。
+> - 本次整理仅做文件与说明精简，不改节点输入输出与执行逻辑。
+> - 反推接口优先级：节点输入 > `config.yaml` 对应 provider > 环境变量。
+
 ## Table of Contents
 - [Node Overview](#node-overview)
 - [Qwen3.5 Prompt Enhancer](#qwen35-prompt-enhancer)
 - [Qwen3.5 Reverse Prompt](#qwen35-reverse-prompt)
+- [Vision API Reverse Prompt](#vision-api-reverse-prompt)
 - [Qwen Translator](#qwen-translator)
 - [Qwen Kontext Translator](#qwen-kontext-translator)
 - [Best Practices](#best-practices)
@@ -11,12 +18,13 @@
 
 ## Node Overview
 
-ComfyUI-IAT provides 4 powerful nodes for text and image processing:
+ComfyUI-IAT provides 5 powerful nodes for text and image processing:
 
 | Node | Category | Purpose |
 |------|----------|---------|
 | Qwen3.5 Prompt Enhancer | IAT/Qwen3.5 | Enhance and optimize text prompts |
 | Qwen3.5 Reverse Prompt | IAT/Qwen3.5 | Generate prompts from images |
+| Vision API Reverse Prompt | IAT/Vision API | Generate prompts from images via OpenAI-compatible APIs, Gemini, and Qwen-compatible providers |
 | Qwen Translator | IAT/Qwen3.5 | Translate text to English |
 | Qwen Kontext Translator | IAT/Qwen3.5 | Optimize editing instructions |
 
@@ -123,6 +131,48 @@ Generate text prompts from input images using vision-language models.
 
 ```
 [Load Image] → [Qwen3.5 Reverse Prompt] → [Show Text]
+                    ↓
+            [CLIP Text Encode] → [KSampler] → [Save Image]
+```
+
+## Vision API Reverse Prompt
+
+### Purpose
+Generate text prompts from input images using multiple vision APIs.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| provider | Dropdown | OpenAI-Compatible | Upstream API provider |
+| model | String | gpt-4.1-mini | Provider-specific model name |
+| api_key | String | "" | API key override; leave empty to use the matching provider config/env |
+| base_url | String | https://api.openai.com/v1 | Provider API base URL |
+| preset_prompt | Dropdown | Detailed Description | Analysis style |
+| custom_prompt | String | "" | Custom analysis prompt |
+| image_detail | Dropdown | auto | Vision detail level |
+| max_tokens | Int | 192 | Maximum output length |
+| temperature | Float | 0.2 | Creativity (0.0-2.0) |
+| top_p | Float | 1.0 | Nucleus sampling |
+| timeout_seconds | Int | 60 | HTTP timeout |
+| image | IMAGE | optional | Primary image |
+| image_2 | IMAGE | optional | Second image |
+| image_3 | IMAGE | optional | Third image |
+| image_4 | IMAGE | optional | Fourth image |
+
+### Features
+
+- **Multi-provider** - Supports `OpenAI-Compatible`, `Gemini`, and `Qwen OpenAI-Compatible`
+- **Preset parity** - Reuses the same reverse prompt presets as the local Qwen node
+- **Flexible auth** - Resolution order is node input -> matching provider section in `config.yaml` -> that provider's environment variable
+- **Multi-image input** - Supports up to 4 input images
+- **Actionable errors** - Returns clearer reasons for invalid API key, insufficient balance, invalid URL, timeout, rate limiting, and upstream failures
+- **Model refresh** - Use `refresh_models` to query `/models` with the current `api_key` and `base_url`, then select from `available_models`
+
+### Example Workflow
+
+```
+[Load Image] → [Vision API Reverse Prompt] → [Show Text]
                     ↓
             [CLIP Text Encode] → [KSampler] → [Save Image]
 ```

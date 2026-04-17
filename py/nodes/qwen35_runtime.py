@@ -51,6 +51,7 @@ except Exception:
 
 _CFG = getattr(sys.modules.get("comfyui_iat_config"), "data", {}) or {}
 _RUNTIME_CFG = (_CFG.get("runtime") or {}) if isinstance(_CFG, dict) else {}
+_LOGGING_CFG = (_CFG.get("logging") or {}) if isinstance(_CFG, dict) else {}
 
 MIN_TRANSFORMERS_FOR_QWEN35 = "4.57.0"
 QWEN35_MODEL_TYPE = "qwen3_5"
@@ -76,22 +77,20 @@ VL_MODEL_CANDIDATES: Dict[str, List[str]] = {
     "Qwen3.5-27B": ["Qwen/Qwen3.5-27B"],
 }
 
-QUANT_OPTIONS = ["None (FP16/BF16)", "8-bit", "4-bit"]
-DEVICE_OPTIONS = ["auto", "cuda", "cpu"]
+QUANT_OPTIONS = ["无", "8-bit", "4-bit"]
+DEVICE_OPTIONS = ["cuda", "cpu"]
 ATTENTION_OPTIONS = [
-    "Auto",
     "SDPA",
     "FlashAttention-2",
     "Eager",
 ]
 _ATTENTION_BACKEND_TO_IMPL = {
-    "Auto": None,
     "SDPA": "sdpa",
     "FlashAttention-2": "flash_attention_2",
     "Eager": "eager",
 }
 _ATTENTION_BACKEND_ALIASES = {
-    "auto": "Auto",
+    "auto": "SDPA",
     "sdpa": "SDPA",
     "flash": "FlashAttention-2",
     "flash_attention_2": "FlashAttention-2",
@@ -103,8 +102,8 @@ _ATTENTION_BACKEND_ALIASES = {
     "flex_attention": "SDPA",
     "flex attention": "SDPA",
     "eager": "Eager",
-    "default": "Auto",
-    "transformers default": "Auto",
+    "default": "SDPA",
+    "transformers default": "SDPA",
 }
 
 # 模型缓存 - 避免重复加载
@@ -128,10 +127,20 @@ def _cfg_bool(name: str, default: bool) -> bool:
     return bool(value)
 
 
+def _cfg_logging_bool(name: str, default: bool) -> bool:
+    value = _LOGGING_CFG.get(name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 AUTO_UPGRADE_TRANSFORMERS = _cfg_bool("auto_upgrade_transformers", True)
 PREFER_OPTIMIZED_ATTENTION = _cfg_bool("prefer_optimized_attention", True)
 ENABLE_TORCH_COMPILE = _cfg_bool("enable_torch_compile", False)
-DEFAULT_ATTENTION_BACKEND = "Auto"
+DEFAULT_ATTENTION_BACKEND = "SDPA"
+VERBOSE_LOGGING = _cfg_logging_bool("verbose", False)
 
 
 def _get_optimal_attn_implementation(device: str) -> Optional[str]:
@@ -154,17 +163,17 @@ def _get_optimal_attn_implementation(device: str) -> Optional[str]:
     # 优先使用 transformers 自带的 availability 检测，避免 flash_attn 包名映射异常
     if _check_availability(is_flash_attn_2_available, "Flash Attention 2"):
         _ATTN_IMPLEMENTATION = "flash_attention_2"
-        print("[IAT] 使用 Flash Attention 2 加速")
+        _log_info("使用 Flash Attention 2 加速")
         return _ATTN_IMPLEMENTATION
 
     # 检查是否支持 SDPA (Scaled Dot Product Attention)
     if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
         _ATTN_IMPLEMENTATION = "sdpa"
-        print("[IAT] 使用 SDPA (Scaled Dot Product Attention) 加速")
+        _log_info("使用 SDPA (Scaled Dot Product Attention) 加速")
         return _ATTN_IMPLEMENTATION
 
     _ATTN_IMPLEMENTATION = None
-    print("[IAT] 使用 Transformers 默认注意力实现")
+    _log_info("使用 Transformers 默认注意力实现")
     return None
 
 
@@ -173,7 +182,8 @@ def _log_major(message: str):
 
 
 def _log_info(message: str):
-    print(f"[IAT] {message}")
+    if VERBOSE_LOGGING:
+        print(f"[IAT] {message}")
 
 
 def _log_warning(message: str):
@@ -191,12 +201,10 @@ def _normalize_attention_backend(attention_backend: Optional[str]) -> str:
 
 def _resolve_attention_backend(attention_backend: Optional[str], device: str) -> Tuple[Optional[str], str, bool]:
     backend = _normalize_attention_backend(attention_backend)
-    if backend == "Auto":
-        return _get_optimal_attn_implementation(device), backend, True
     return _ATTENTION_BACKEND_TO_IMPL.get(backend), backend, False
 
 
-DEFAULT_ATTENTION_BACKEND = _normalize_attention_backend(_RUNTIME_CFG.get("default_attention_backend", "Auto"))
+DEFAULT_ATTENTION_BACKEND = _normalize_attention_backend(_RUNTIME_CFG.get("default_attention_backend", "SDPA"))
 
 
 def _supports_qwen35_architecture() -> bool:
@@ -394,7 +402,7 @@ def resolve_device(device: str) -> str:
         return "cpu"
     if device == "cuda" and not torch.cuda.is_available():
         return "cpu"
-    if device == "mps":
+    if device not in {"cuda", "cpu"}:
         return "cpu"
     return device
 
@@ -443,7 +451,7 @@ def _cpu_offload_memory_budget_gib() -> Optional[int]:
 def _should_use_auto_device_map(variant: str, quantization: str, device: str) -> bool:
     if device != "cuda":
         return False
-    if quantization != "None (FP16/BF16)":
+    if quantization != "无":
         return True
     size_b = _variant_size_billions(variant)
     if size_b is None:
@@ -533,7 +541,7 @@ def _prepare_cuda_for_load():
 
 def _quant_config(quantization: str):
     """创建量化配置"""
-    if quantization == "None (FP16/BF16)":
+    if quantization == "无":
         return None
     if BitsAndBytesConfig is None:
         raise RuntimeError("[IAT] bitsandbytes is required for 4-bit/8-bit quantization. Install: pip install bitsandbytes")
