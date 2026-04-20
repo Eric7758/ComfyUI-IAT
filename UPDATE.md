@@ -19,6 +19,7 @@
 ### 4) 文档与安装器一致性修正
 - README / INSTALL / USAGE / TROUBLESHOOTING 全量同步到当前真实行为。
 - `install.py` 改为仅做依赖安装与兼容性检查，不再自动拉取 transformers 源码包。
+- 补充 v2.0.0 GitHub Release 模板：`.github/release-v2.0.0.md`。
 
 ## 2026-04-17 (v1.22.0)
 

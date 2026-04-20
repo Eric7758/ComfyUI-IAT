@@ -2,7 +2,7 @@
 
 # 🎨 ComfyUI-IAT
 
-**Image & Text utilities with Qwen3.5 translator and prompt optimizer for ComfyUI**
+**ComfyUI-IAT v2.0: stable Qwen3.5 text/image utilities for production workflows**
 
 [![GitHub stars](https://img.shields.io/github/stars/Eric7758/ComfyUI-IAT?style=flat-square)](https://github.com/Eric7758/ComfyUI-IAT/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/Eric7758/ComfyUI-IAT?style=flat-square)](https://github.com/Eric7758/ComfyUI-IAT/network)
@@ -19,6 +19,14 @@
 ---
 
 ## <a name="english"></a> 🇺🇸 English
+
+### 📌 v2.0 at a glance
+
+- Official Qwen model path only (`Qwen3.5` / `Qwen3.6-35B-A3B`)
+- Fixed model directory: `ComfyUI/models/diffusion_models`
+- Download strategy: `ModelScope -> HuggingFace`
+- No runtime auto-upgrade for dependencies
+- Clear production error codes (`E1001`, `E2001`, `E2003`, `E2004`, `E5001`)
 
 ### ✨ Features
 
@@ -228,6 +236,14 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file.
 ---
 
 ## <a name="中文"></a> 🇨🇳 中文
+
+### 📌 v2.0 核心说明
+
+- 仅保留 Qwen 官方原版模型路径（`Qwen3.5` / `Qwen3.6-35B-A3B`）
+- 模型目录固定为 `ComfyUI/models/diffusion_models`
+- 下载顺序固定为 `ModelScope -> HuggingFace`
+- 运行时不再自动升级依赖
+- 生产错误码统一（`E1001`、`E2001`、`E2003`、`E2004`、`E5001`）
 
 ### ✨ 功能特性
 

@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-iat"
-description = "ComfyUI-IAT: Image & Text utilities with Qwen translator and prompt optimizer."
+description = "ComfyUI-IAT v2.0: stable Qwen3.5/3.6 text-image utilities for ComfyUI production workflows."
 version = "2.0.0"
 license = { text = "MIT" }
 dependencies = [
