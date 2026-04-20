@@ -5,9 +5,13 @@
 > - 节点分类不变：`IAT/Qwen3.5`、`IAT/Vision API`、`IAT/Image`、`IAT/Input`。
 > - 本次整理仅做文件与说明精简，不改节点输入输出与执行逻辑。
 > - 反推接口优先级：节点输入 > `config.yaml` 对应 provider > 环境变量。
+> - 文本与视觉节点仅支持官方原版 `model_variant`。
+> - 模型下载目录固定为 `ComfyUI/models/diffusion_models`。
+> - 下载源顺序固定为 `ModelScope -> HuggingFace`。
 
 ## Table of Contents
 - [Node Overview](#node-overview)
+- [Model Variants](#model-variants)
 - [Qwen3.5 Prompt Enhancer](#qwen35-prompt-enhancer)
 - [Qwen3.5 Reverse Prompt](#qwen35-reverse-prompt)
 - [Vision API Reverse Prompt](#vision-api-reverse-prompt)
@@ -28,6 +32,21 @@ ComfyUI-IAT provides 5 powerful nodes for text and image processing:
 | Qwen Translator | IAT/Qwen3.5 | Translate text to English |
 | Qwen Kontext Translator | IAT/Qwen3.5 | Optimize editing instructions |
 
+## Model Variants
+
+Available `model_variant` values:
+- `Qwen3.5-0.8B`
+- `Qwen3.5-2B`
+- `Qwen3.5-4B`
+- `Qwen3.5-9B`
+- `Qwen3.5-27B`
+- `Qwen3.6-35B-A3B`
+
+Runtime behavior:
+- Backend: Transformers (official model path only)
+- Download path: `ComfyUI/models/diffusion_models`
+- Download order: ModelScope first, HuggingFace fallback
+
 ## Qwen3.5 Prompt Enhancer
 
 ### Purpose
@@ -37,9 +56,8 @@ Transform simple prompts into detailed, professional-grade image generation prom
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| model_variant | Dropdown | Qwen3.5-Latest | Model size to use |
-| quantization | Dropdown | None | Quantization mode |
-| device | Dropdown | auto | Computing device |
+| model_variant | Dropdown | Official model list | Select official model variant |
+| device | Dropdown | cuda | Computing device |
 | prompt_text | String | "" | Input prompt to enhance |
 | enhancement_style | Dropdown | Enhance | Enhancement style |
 | custom_system_prompt | String | "" | Custom system prompt |
@@ -97,9 +115,8 @@ Generate text prompts from input images using vision-language models.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| model_variant | Dropdown | Qwen3.5-VL-Latest | Vision model size |
-| quantization | Dropdown | None | Quantization mode |
-| device | Dropdown | auto | Computing device |
+| model_variant | Dropdown | Official model list | Select official VL variant |
+| device | Dropdown | cuda | Computing device |
 | preset_prompt | Dropdown | Detailed Description | Analysis style |
 | custom_prompt | String | "" | Custom analysis prompt |
 | max_tokens | Int | 192 | Maximum output length |
@@ -187,9 +204,8 @@ Automatically translate Chinese or Japanese text to natural English.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | text | String | "" | Text to translate |
-| model_variant | Dropdown | Qwen3.5-Latest | Model size |
-| quantization | Dropdown | None | Quantization mode |
-| device | Dropdown | auto | Computing device |
+| model_variant | Dropdown | Official model list | Select official model variant |
+| device | Dropdown | cuda | Computing device |
 | max_tokens | Int | 512 | Maximum output length |
 | temperature | Float | 0.1 | Low for accuracy |
 | keep_model_loaded | Boolean | True | Keep model in memory |
@@ -227,9 +243,8 @@ Optimize editing instructions for image editing models (especially Kontext-based
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | text | String | "" | Editing instruction |
-| model_variant | Dropdown | Qwen3.5-Latest | Model size |
-| quantization | Dropdown | None | Quantization mode |
-| device | Dropdown | auto | Computing device |
+| model_variant | Dropdown | Official model list | Select official model variant |
+| device | Dropdown | cuda | Computing device |
 | max_tokens | Int | 512 | Maximum output length |
 | temperature | Float | 0.0 | Low for consistency |
 | keep_model_loaded | Boolean | True | Keep model in memory |
@@ -265,12 +280,12 @@ natural distribution, complementary colors"
 
 ### Model Selection
 
-| VRAM Available | Recommended Model | Quantization |
-|----------------|-------------------|--------------|
-| 8GB | Qwen3.5-3B | 4-bit |
-| 12GB | Qwen3.5-7B | 8-bit |
-| 16GB+ | Qwen3.5-7B/14B | None |
-| 24GB+ | Qwen3.5-14B/32B | None |
+| VRAM Available | Recommended model_variant |
+|----------------|---------------------------|
+| 8GB | `Qwen3.5-0.8B` |
+| 12GB | `Qwen3.5-2B` |
+| 16GB+ | `Qwen3.5-4B` / `Qwen3.5-9B` |
+| 24GB+ | `Qwen3.5-9B` / `Qwen3.5-27B` |
 
 ### Temperature Guidelines
 
@@ -344,6 +359,6 @@ natural distribution, complementary colors"
 
 1. **First load is slow** - Model downloads and loads on first use
 2. **Subsequent uses are fast** - Keep models loaded when possible
-3. **Use quantization** - Significantly reduces VRAM usage
+3. **Use a smaller official variant** - Choose a model size that matches your VRAM
 4. **Batch when possible** - Process multiple items in one session
 5. **Monitor VRAM** - Use system monitor to track memory usage

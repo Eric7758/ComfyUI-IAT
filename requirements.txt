@@ -1,5 +1,5 @@
 ## ComfyUI-IAT 运行依赖（包含基础科学计算依赖，避免环境差异）
-## 说明：transformers 版本过旧可能不支持 qwen3_5 架构；插件在运行时也会做兼容检测并尝试自动升级。
+## 说明：transformers 版本过旧可能不支持 qwen3_5 架构；运行时会做兼容检测并返回可执行的手动修复命令。
 
 # Qwen3.5 文本/多模态模型推理框架
 # 说明：Qwen3.5 架构在 transformers v5.2.0 起稳定支持
@@ -16,6 +16,6 @@ PyYAML>=6.0
 # 版本比较与兼容性判断（qwen35_runtime.py）
 packaging>=24.0
 
-# 模型自动下载源（主：ModelScope，备：HuggingFace Hub）
+# 模型自动下载（ModelScope 优先，HuggingFace 兜底）
 modelscope>=1.18.0
 huggingface_hub>=0.24.0

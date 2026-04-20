@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import gc
 import importlib.util
+import json
 import os
 import re
-import subprocess
 import sys
+import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import torch
 import transformers
@@ -25,11 +28,6 @@ except ImportError:
     from transformers import AutoModelForVision2Seq
 
 try:
-    from transformers import BitsAndBytesConfig
-except Exception:
-    BitsAndBytesConfig = None
-
-try:
     from modelscope.hub.snapshot_download import snapshot_download as ms_snapshot_download
 except Exception:
     try:
@@ -41,6 +39,11 @@ try:
     from huggingface_hub import snapshot_download as hf_snapshot_download
 except Exception:
     hf_snapshot_download = None
+
+try:
+    import fcntl
+except Exception:
+    fcntl = None
 
 import folder_paths
 
@@ -55,29 +58,72 @@ _LOGGING_CFG = (_CFG.get("logging") or {}) if isinstance(_CFG, dict) else {}
 
 MIN_TRANSFORMERS_FOR_QWEN35 = "5.2.0"
 QWEN35_MODEL_TYPE = "qwen3_5"
-TRANSFORMERS_UPGRADE_SOURCES = (
-    "git+https://github.com/huggingface/transformers.git",
-    "https://github.com/huggingface/transformers/archive/refs/heads/main.zip",
-)
-
-# Qwen3.5 Dense Models for Consumer GPUs
-TEXT_MODEL_CANDIDATES: Dict[str, List[str]] = {
-    "Qwen3.5-0.8B": ["Qwen/Qwen3.5-0.8B"],
-    "Qwen3.5-2B": ["Qwen/Qwen3.5-2B"],
-    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B"],
-    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B"],
-    "Qwen3.5-27B": ["Qwen/Qwen3.5-27B"],
+# 模型映射说明：
+# 1) 仅保留 Qwen 官方原版仓库。
+# 2) 不提供量化/GGUF 变体选项。
+_BASE_MODEL_REPOS: Dict[str, str] = {
+    "Qwen3.5-0.8B": "Qwen/Qwen3.5-0.8B",
+    "Qwen3.5-2B": "Qwen/Qwen3.5-2B",
+    "Qwen3.5-4B": "Qwen/Qwen3.5-4B",
+    "Qwen3.5-9B": "Qwen/Qwen3.5-9B",
+    "Qwen3.5-27B": "Qwen/Qwen3.5-27B",
+    "Qwen3.6-35B-A3B": "Qwen/Qwen3.6-35B-A3B",
 }
 
-VL_MODEL_CANDIDATES: Dict[str, List[str]] = {
-    "Qwen3.5-0.8B": ["Qwen/Qwen3.5-0.8B"],
-    "Qwen3.5-2B": ["Qwen/Qwen3.5-2B"],
-    "Qwen3.5-4B": ["Qwen/Qwen3.5-4B"],
-    "Qwen3.5-9B": ["Qwen/Qwen3.5-9B"],
-    "Qwen3.5-27B": ["Qwen/Qwen3.5-27B"],
-}
+def _build_text_model_candidates() -> Dict[str, List[str]]:
+    result: Dict[str, List[str]] = {}
+    for model_name, official_repo in _BASE_MODEL_REPOS.items():
+        # 仅保留官方原版模型选项
+        result[model_name] = [official_repo]
+    return result
 
-QUANT_OPTIONS = ["无", "8-bit", "4-bit"]
+
+def _build_vl_model_candidates() -> Dict[str, List[str]]:
+    result: Dict[str, List[str]] = {}
+    for model_name, official_repo in _BASE_MODEL_REPOS.items():
+        # 仅保留官方原版模型选项
+        result[model_name] = [official_repo]
+    return result
+
+
+TEXT_MODEL_CANDIDATES: Dict[str, List[str]] = _build_text_model_candidates()
+VL_MODEL_CANDIDATES: Dict[str, List[str]] = _build_vl_model_candidates()
+
+
+def _grouped_options(model_map: Dict[str, List[str]]):
+    grouped_labels: List[str] = []
+    label_to_variant: Dict[str, str] = {}
+
+    def _variant_size_key(variant: str):
+        m = re.search(r"(\d+(?:\.\d+)?)B", variant or "")
+        if not m:
+            return float("inf")
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return float("inf")
+
+    # 仅保留原始模型名展示，并按参数规模从小到大排序。
+    variants = sorted(model_map.keys(), key=lambda x: (_variant_size_key(x), x))
+    for variant in variants:
+        grouped_labels.append(variant)
+        label_to_variant[variant] = variant
+    return grouped_labels, label_to_variant
+
+
+TEXT_MODEL_OPTIONS_GROUPED, TEXT_MODEL_LABEL_TO_VARIANT = _grouped_options(TEXT_MODEL_CANDIDATES)
+VL_MODEL_OPTIONS_GROUPED, VL_MODEL_LABEL_TO_VARIANT = _grouped_options(VL_MODEL_CANDIDATES)
+
+
+def resolve_model_variant(selection: str, mode: str = "text") -> str:
+    """将分组展示标签解析为真实模型variant。"""
+    if mode == "vl":
+        mapping = VL_MODEL_LABEL_TO_VARIANT
+        candidates = VL_MODEL_CANDIDATES
+    else:
+        mapping = TEXT_MODEL_LABEL_TO_VARIANT
+        candidates = TEXT_MODEL_CANDIDATES
+    return mapping.get(selection, selection if selection in candidates else selection)
 DEVICE_OPTIONS = ["cuda", "cpu"]
 ATTENTION_OPTIONS = [
     "SDPA",
@@ -115,7 +161,6 @@ _MODEL_CACHE = {
 # 性能优化配置
 _ATTN_IMPLEMENTATION = None  # 自动检测最佳注意力实现
 _ATTN_IMPLEMENTATION_RESOLVED = False
-_TRANSFORMERS_UPGRADE_ATTEMPTED = False
 
 
 def _cfg_bool(name: str, default: bool) -> bool:
@@ -136,11 +181,13 @@ def _cfg_logging_bool(name: str, default: bool) -> bool:
     return bool(value)
 
 
-AUTO_UPGRADE_TRANSFORMERS = _cfg_bool("auto_upgrade_transformers", True)
 PREFER_OPTIMIZED_ATTENTION = _cfg_bool("prefer_optimized_attention", True)
 ENABLE_TORCH_COMPILE = _cfg_bool("enable_torch_compile", False)
 DEFAULT_ATTENTION_BACKEND = "SDPA"
 VERBOSE_LOGGING = _cfg_logging_bool("verbose", False)
+DOWNLOAD_RETRY_TIMES = 2
+DOWNLOAD_RETRY_DELAY_SECONDS = 1.0
+DOWNLOAD_LOCK_TIMEOUT_SECONDS = 300
 
 
 def _get_optimal_attn_implementation(device: str) -> Optional[str]:
@@ -190,6 +237,16 @@ def _log_warning(message: str):
     print(f"\033[93m[IAT] 警告: {message}\033[0m")
 
 
+def _raise_runtime_error(code: str, message: str, detail: Optional[str] = None, cause: Optional[Exception] = None):
+    """统一错误出口：对用户简洁，对日志可追踪。"""
+    trace_id = uuid.uuid4().hex[:8]
+    if detail:
+        _log_warning(f"[{code}][{trace_id}] {detail}")
+    if cause is not None:
+        _log_warning(f"[{code}][{trace_id}] cause={repr(cause)}")
+    raise RuntimeError(f"[IAT:{code}][{trace_id}] {message}")
+
+
 def _normalize_attention_backend(attention_backend: Optional[str]) -> str:
     if attention_backend in ATTENTION_OPTIONS:
         return attention_backend
@@ -223,38 +280,10 @@ def _supports_qwen35_architecture() -> bool:
 
 
 def _manual_transformers_upgrade_command() -> str:
-    return f'"{sys.executable}" -m pip install --upgrade {TRANSFORMERS_UPGRADE_SOURCES[0]}'
-
-
-def _tail_text(text: str, lines: int = 8) -> str:
-    chunks = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    return " | ".join(chunks[-lines:])
-
-
-def _attempt_transformers_upgrade() -> Tuple[bool, str]:
-    _log_major("检测到当前 transformers 缺少 Qwen3.5 架构支持，尝试自动升级源码版本")
-    errors: List[str] = []
-
-    for source in TRANSFORMERS_UPGRADE_SOURCES:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", source]
-        _log_info(f"执行依赖升级: {' '.join(cmd)}")
-        try:
-            completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        except Exception as exc:
-            errors.append(f"{source}: {exc}")
-            continue
-
-        if completed.returncode == 0:
-            return True, source
-
-        summary = _tail_text(completed.stderr or completed.stdout)
-        errors.append(f"{source}: {summary or f'pip exited with code {completed.returncode}'}")
-
-    return False, " | ".join(errors[-4:])
+    return f'"{sys.executable}" -m pip install --upgrade "transformers>={MIN_TRANSFORMERS_FOR_QWEN35}"'
 
 
 def _check_transformers_support() -> None:
-    global _TRANSFORMERS_UPGRADE_ATTEMPTED
     current = getattr(transformers, "__version__", "0.0.0")
     issues: List[str] = []
 
@@ -268,38 +297,19 @@ def _check_transformers_support() -> None:
 
     manual_command = _manual_transformers_upgrade_command()
     detail = "; ".join(issues)
-
-    if AUTO_UPGRADE_TRANSFORMERS and not _TRANSFORMERS_UPGRADE_ATTEMPTED:
-        _TRANSFORMERS_UPGRADE_ATTEMPTED = True
-        upgraded, upgrade_detail = _attempt_transformers_upgrade()
-        if upgraded:
-            raise RuntimeError(
-                "[IAT] Current transformers build cannot load Qwen3.5 "
-                f"({detail}). The plugin has upgraded transformers automatically from {upgrade_detail}. "
-                "Please restart ComfyUI and run the node again."
-            )
-        raise RuntimeError(
-            "[IAT] Current transformers build cannot load Qwen3.5 "
-            f"({detail}). Automatic upgrade failed. Run `{manual_command}` and restart ComfyUI. "
-            f"Details: {upgrade_detail}"
-        )
-
-    auto_upgrade_note = ""
-    if not AUTO_UPGRADE_TRANSFORMERS:
-        auto_upgrade_note = " Automatic upgrade is disabled in config.yaml."
-    raise RuntimeError(
-        "[IAT] Current transformers build cannot load Qwen3.5 "
-        f"({detail}).{auto_upgrade_note} Run `{manual_command}` and restart ComfyUI."
+    _raise_runtime_error(
+        "E5001",
+        "Transformers 版本或架构不满足要求。",
+        detail=f"{detail}; 修复命令: {manual_command}",
     )
 
 
 def _get_llm_dir() -> Path:
-    llm_paths = []
-    if hasattr(folder_paths, "folder_names_and_paths") and "LLM" in folder_paths.folder_names_and_paths:
-        llm_paths = folder_paths.get_folder_paths("LLM")
-    llm_dir = Path(llm_paths[0]) if llm_paths else Path(folder_paths.models_dir) / "LLM"
-    llm_dir.mkdir(parents=True, exist_ok=True)
-    return llm_dir
+    # 固定使用 ComfyUI 根目录下的 models/diffusion_models，
+    # 不跟随 `diffusion_models -> unet` 这类映射别名，避免落到 models/unet。
+    model_dir = Path(folder_paths.models_dir) / "diffusion_models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    return model_dir
 
 
 def _get_offload_dir() -> Path:
@@ -320,11 +330,137 @@ def _model_local_dir(repo_id: str) -> Path:
     return _get_llm_dir() / _normalize_local_name(repo_id)
 
 
+def _model_state_file(model_dir: Path) -> Path:
+    return model_dir / ".iat.model_state.json"
+
+
+def _model_lock_file(model_dir: Path) -> Path:
+    return model_dir / ".iat.download.lock"
+
+
+def _load_model_state(model_dir: Path) -> dict:
+    state_path = _model_state_file(model_dir)
+    if not state_path.exists():
+        return {}
+    try:
+        raw = json.loads(state_path.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_model_state(model_dir: Path, state: dict) -> None:
+    model_dir.mkdir(parents=True, exist_ok=True)
+    state_path = _model_state_file(model_dir)
+    tmp_path = state_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp_path, state_path)
+
+
+def _clear_model_state(model_dir: Path) -> None:
+    try:
+        _model_state_file(model_dir).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+@contextmanager
+def _model_dir_lock(model_dir: Path):
+    model_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = _model_lock_file(model_dir)
+    with open(lock_path, "a+", encoding="utf-8") as lock_fp:
+        if fcntl is None:
+            yield
+            return
+
+        start = time.time()
+        acquired = False
+        while time.time() - start < DOWNLOAD_LOCK_TIMEOUT_SECONDS:
+            try:
+                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError:
+                time.sleep(0.2)
+            except Exception as exc:
+                _raise_runtime_error("E2003", "模型下载锁获取失败。", detail=str(exc), cause=exc)
+
+        if not acquired:
+            _raise_runtime_error(
+                "E2004",
+                "模型下载锁等待超时。",
+                detail=f"path={lock_path}; timeout={DOWNLOAD_LOCK_TIMEOUT_SECONDS}s",
+            )
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+
+
 def _has_weights(model_dir: Path) -> bool:
     for pat in ("*.safetensors", "*.bin", "*.pt"):
         if next(model_dir.glob(pat), None) is not None:
             return True
     return False
+
+
+def _expected_weight_files_from_index(model_dir: Path) -> Set[str]:
+    expected: Set[str] = set()
+    for name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+        idx = model_dir / name
+        if not idx.exists():
+            continue
+        try:
+            data = json.loads(idx.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        weight_map = data.get("weight_map") if isinstance(data, dict) else None
+        if isinstance(weight_map, dict):
+            for file_name in weight_map.values():
+                if isinstance(file_name, str) and file_name.strip():
+                    expected.add(file_name.strip())
+    return expected
+
+
+def _missing_weight_files(model_dir: Path) -> Set[str]:
+    expected = _expected_weight_files_from_index(model_dir)
+    if not expected:
+        return set()
+    return {name for name in expected if not (model_dir / name).exists()}
+
+
+def _is_model_complete(model_dir: Path, repo_id: str, mode: str) -> bool:
+    if not model_dir.exists():
+        return False
+    if not _has_weights(model_dir):
+        return False
+    if _missing_weight_files(model_dir):
+        return False
+    if mode == "vl" and not _has_vl_processor_files(model_dir):
+        return False
+
+    state = _load_model_state(model_dir)
+    if (
+        state.get("repo_id") == repo_id
+        and state.get("mode") == mode
+        and state.get("complete") is True
+    ):
+        return True
+
+    # 兼容旧目录：即使没有状态文件，只要完整即补写状态并视为可用。
+    _save_model_state(
+        model_dir,
+        {
+            "repo_id": repo_id,
+            "mode": mode,
+            "complete": True,
+            "updated_at": int(time.time()),
+        },
+    )
+    return True
 
 
 def _has_vl_processor_files(model_dir: Path) -> bool:
@@ -337,61 +473,93 @@ def _has_vl_processor_files(model_dir: Path) -> bool:
     return any((model_dir / name).exists() for name in required_any)
 
 
+def _download_from_hf(repo_id: str, local_dir: Path) -> bool:
+    if hf_snapshot_download is None:
+        return False
+    local_dir.mkdir(parents=True, exist_ok=True)
+    hf_snapshot_download(repo_id=repo_id, local_dir=str(local_dir), resume_download=True)
+    return True
+
+
 def _download_from_modelscope(repo_id: str, local_dir: Path) -> bool:
     if ms_snapshot_download is None:
         return False
     local_dir.mkdir(parents=True, exist_ok=True)
     try:
+        # ModelScope 新接口
         ms_snapshot_download(model_id=repo_id, local_dir=str(local_dir))
     except TypeError:
+        # 兼容旧接口
         ms_snapshot_download(repo_id, cache_dir=str(local_dir.parent))
     return True
 
 
-def _download_from_hf(repo_id: str, local_dir: Path) -> bool:
-    if hf_snapshot_download is None:
-        return False
-    local_dir.mkdir(parents=True, exist_ok=True)
-    hf_snapshot_download(repo_id=repo_id, local_dir=str(local_dir))
-    return True
+def _download_with_retry(downloader_name: str, downloader, repo_id: str, local_dir: Path) -> bool:
+    last_exc: Optional[Exception] = None
+    for i in range(1, DOWNLOAD_RETRY_TIMES + 1):
+        try:
+            ok = downloader(repo_id, local_dir)
+            if ok:
+                return True
+        except Exception as exc:
+            last_exc = exc
+            _log_info(f"{downloader_name} 下载失败（第 {i}/{DOWNLOAD_RETRY_TIMES} 次）: {repo_id} -> {exc}")
+            if i < DOWNLOAD_RETRY_TIMES:
+                time.sleep(DOWNLOAD_RETRY_DELAY_SECONDS)
+    if last_exc is not None:
+        raise last_exc
+    return False
 
 
 def ensure_model(variant: str, mode: str) -> Path:
     model_map = TEXT_MODEL_CANDIDATES if mode == "text" else VL_MODEL_CANDIDATES
     candidates = model_map.get(variant)
     if not candidates:
-        raise ValueError(f"[IAT] Unsupported Qwen3.5 variant: {variant}")
+        _raise_runtime_error("E1001", f"不支持的模型选项：{variant}")
 
     errors: List[str] = []
     for repo_id in candidates:
         target = _model_local_dir(repo_id)
-        if target.exists() and _has_weights(target):
-            if mode == "vl" and not _has_vl_processor_files(target):
-                _log_info(f"跳过无效多模态模型目录（缺少处理器文件）: {target}")
-            else:
+        with _model_dir_lock(target):
+            if _is_model_complete(target, repo_id, mode):
                 if repo_id != candidates[0]:
                     _log_info(f"使用候选回退仓库: {repo_id}")
                 return target
 
-        for source_name, downloader in (("ModelScope", _download_from_modelscope), ("HuggingFace", _download_from_hf)):
-            try:
-                ok = downloader(repo_id, target)
-                if not ok:
-                    continue
-                if _has_weights(target):
+            if target.exists() and _has_weights(target):
+                missing = _missing_weight_files(target)
+                if missing:
+                    _log_warning(f"检测到模型分片缺失，将自动补齐：{repo_id} 缺少 {len(missing)} 个文件")
+                _clear_model_state(target)
+
+            # 标准模型下载策略：ModelScope 优先，HuggingFace 兜底
+            for source_name, downloader in (
+                ("ModelScope", _download_from_modelscope),
+                ("HuggingFace", _download_from_hf),
+            ):
+                try:
+                    ok = _download_with_retry(source_name, downloader, repo_id, target)
+                    if not ok:
+                        continue
+                    if _is_model_complete(target, repo_id, mode):
+                        _log_major(f"模型已下载: {repo_id} <- {source_name}")
+                        return target
+
+                    missing_after = _missing_weight_files(target)
+                    if missing_after:
+                        errors.append(f"{repo_id}: still missing shards after {source_name} ({len(missing_after)} files)")
+                        continue
                     if mode == "vl" and not _has_vl_processor_files(target):
                         errors.append(f"{repo_id}: missing VL processor files after {source_name} download")
                         continue
-                    _log_major(f"模型已下载: {repo_id} <- {source_name}")
-                    return target
-                errors.append(f"{repo_id}: no model weights after {source_name} download")
-            except Exception as exc:
-                errors.append(f"{repo_id}: {source_name} download failed: {exc}")
+                    errors.append(f"{repo_id}: validation failed after {source_name} download")
+                except Exception as exc:
+                    errors.append(f"{repo_id}: {source_name} download failed: {exc}")
 
-    raise RuntimeError(
-        "[IAT] Failed to prepare Qwen3.5 model. "
-        f"Variant={variant}, mode={mode}, tried={', '.join(candidates)}. "
-        f"Details: {' | '.join(errors[-6:])}"
+    _raise_runtime_error(
+        "E2001",
+        f"模型下载或校验失败：{variant}（{mode}）",
+        detail=f"tried={', '.join(candidates)}; details={' | '.join(errors[-6:])}",
     )
 
 
@@ -448,11 +616,9 @@ def _cpu_offload_memory_budget_gib() -> Optional[int]:
     return max(4, int(available * 0.8))
 
 
-def _should_use_auto_device_map(variant: str, quantization: str, device: str) -> bool:
+def _should_use_auto_device_map(variant: str, device: str) -> bool:
     if device != "cuda":
         return False
-    if quantization != "无":
-        return True
     size_b = _variant_size_billions(variant)
     if size_b is None:
         return True
@@ -476,22 +642,15 @@ def _has_accelerate() -> bool:
     return importlib.util.find_spec("accelerate") is not None
 
 
-def _cuda_max_memory_map(quantization: str = None, reserve_gib: int = 4):
+def _cuda_max_memory_map(reserve_gib: int = 4):
     """
     计算每个GPU的最大可用显存
     
     Args:
-        quantization: 量化模式，用于调整预留显存
         reserve_gib: 基础预留显存（GB）
     """
     if not torch.cuda.is_available():
         return None
-    
-    # 根据量化模式调整预留显存
-    if quantization == "4-bit":
-        reserve_gib = max(2, reserve_gib - 2)  # 4-bit量化需要更少预留
-    elif quantization == "8-bit":
-        reserve_gib = max(3, reserve_gib - 1)
     
     max_memory = {}
     for idx in range(torch.cuda.device_count()):
@@ -504,8 +663,8 @@ def _cuda_max_memory_map(quantization: str = None, reserve_gib: int = 4):
     return max_memory
 
 
-def _auto_device_max_memory(variant: str, quantization: str):
-    max_memory = _cuda_max_memory_map(quantization)
+def _auto_device_max_memory(variant: str):
+    max_memory = _cuda_max_memory_map()
     if max_memory is None:
         return None
     cpu_budget = _cpu_offload_memory_budget_gib()
@@ -514,7 +673,7 @@ def _auto_device_max_memory(variant: str, quantization: str):
         _log_info(f"CPU 卸载预算: {cpu_budget}GiB")
     size_b = _variant_size_billions(variant)
     if size_b is not None and size_b >= 27.0:
-        _log_warning("Qwen3.5-27B 在 FP16/BF16 下会启用自动分配和 CPU 卸载；24GB 单卡更推荐 4-bit/8-bit。")
+        _log_warning("Qwen3.5-27B 在 FP16/BF16 下会启用自动分配和 CPU 卸载；建议使用更大显存或多卡环境。")
     return max_memory
 
 
@@ -537,48 +696,6 @@ def _prepare_cuda_for_load():
         allocated = torch.cuda.memory_allocated(idx) / (1024**3)
         reserved = torch.cuda.memory_reserved(idx) / (1024**3)
         _log_info(f"GPU {idx} 清理后: 已分配 {allocated:.2f}GB, 预留 {reserved:.2f}GB")
-
-
-def _quant_config(quantization: str):
-    """创建量化配置"""
-    if quantization == "无":
-        return None
-    if BitsAndBytesConfig is None:
-        raise RuntimeError("[IAT] bitsandbytes is required for 4-bit/8-bit quantization. Install: pip install bitsandbytes")
-    
-    if quantization == "8-bit":
-        return BitsAndBytesConfig(
-            load_in_8bit=True,
-            llm_int8_threshold=6.0,  # 阈值，超过此值的outliers保持FP16
-            llm_int8_has_fp16_weight=False,
-        )
-    
-    if quantization == "4-bit":
-        return BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",  # Normal Float 4，比FP4更好
-            bnb_4bit_use_double_quant=True,  # 嵌套量化，进一步减少显存
-            bnb_4bit_compute_dtype=torch.float16,  # 计算时使用的dtype
-        )
-    
-    raise ValueError(f"[IAT] Unsupported quantization: {quantization}")
-
-
-def _assert_quant_applied(model, quantization: str, mode: str):
-    """验证量化是否正确应用"""
-    if quantization == "8-bit":
-        is_8bit = bool(getattr(model, "is_loaded_in_8bit", False))
-        if not is_8bit:
-            _log_warning(f"{mode} 量化未生效: 请求8-bit但模型未以8-bit加载")
-        return is_8bit
-    
-    if quantization == "4-bit":
-        is_4bit = bool(getattr(model, "is_loaded_in_4bit", False))
-        if not is_4bit:
-            _log_warning(f"{mode} 量化未生效: 请求4-bit但模型未以4-bit加载")
-        return is_4bit
-    
-    return True
 
 
 def apply_chat_template(tokenizer, messages) -> str:
@@ -671,15 +788,14 @@ def _load_pretrained_with_fallback(
         raise
 
 
-def _get_model_loading_kwargs(variant: str, quantization: str, device: str, attention_backend: Optional[str]):
+def _get_model_loading_kwargs(variant: str, device: str, attention_backend: Optional[str]):
     """
     获取模型加载参数
     
     优化点：
     1. 使用最佳的注意力实现
-    2. 优化量化配置
-    3. 合理的device_map和max_memory配置
-    4. 支持CPU卸载
+    2. 合理的device_map和max_memory配置
+    3. 支持CPU卸载
     """
     kwargs = {
         "trust_remote_code": True,
@@ -690,62 +806,36 @@ def _get_model_loading_kwargs(variant: str, quantization: str, device: str, atte
     if attn_implementation:
         kwargs["attn_implementation"] = attn_implementation
     
-    qcfg = _quant_config(quantization)
-    
-    if qcfg is not None:
-        # 量化模式
-        if device != "cuda":
-            raise RuntimeError("[IAT] 4-bit/8-bit quantization requires CUDA device.")
-        if not _has_accelerate():
-            raise RuntimeError("[IAT] 4-bit/8-bit quantization with automatic device placement requires accelerate. Install: pip install accelerate")
-        
-        kwargs["quantization_config"] = qcfg
-        _set_model_dtype(kwargs, torch.float16)  # 量化时使用float16
-        
-        # 关键优化：使用更好的device_map配置
-        max_memory = _auto_device_max_memory(variant, quantization)
-        if max_memory:
-            kwargs["max_memory"] = max_memory
+    _set_model_dtype(kwargs, _dtype_for_device(device))
+    if device == "cuda":
+        if _should_use_auto_device_map(variant, device) and _has_accelerate():
+            # accelerate 可用时，允许自动放置和溢出到 CPU
             kwargs["device_map"] = "auto"
+            max_memory = _auto_device_max_memory(variant)
+            if max_memory:
+                kwargs["max_memory"] = max_memory
+            kwargs["offload_folder"] = str(_get_offload_dir())
+            kwargs["offload_state_dict"] = True
+            _log_info("大模型启用 auto device_map + CPU offload。")
+        elif _should_use_auto_device_map(variant, device):
+            _log_info("模型较大但未检测到 accelerate，回退为常规 CUDA 加载。")
+        elif (_variant_size_billions(variant) or 0) >= 9.0:
+            _log_info("9B 模型在 24GB 级显卡上默认使用单卡直载，优先保证稳定性和响应速度。")
         else:
-            kwargs["device_map"] = "auto"
-        
-        # 添加offload文件夹配置，允许CPU卸载
-        kwargs["offload_folder"] = str(_get_offload_dir())
-        kwargs["offload_state_dict"] = True
-        
-    else:
-        # 非量化模式
-        _set_model_dtype(kwargs, _dtype_for_device(device))
-        if device == "cuda":
-            if _should_use_auto_device_map(variant, quantization, device) and _has_accelerate():
-                # accelerate 可用时，允许自动放置和溢出到 CPU
-                kwargs["device_map"] = "auto"
-                max_memory = _auto_device_max_memory(variant, quantization)
-                if max_memory:
-                    kwargs["max_memory"] = max_memory
-                kwargs["offload_folder"] = str(_get_offload_dir())
-                kwargs["offload_state_dict"] = True
-                _log_info("大模型启用 auto device_map + CPU offload。")
-            elif _should_use_auto_device_map(variant, quantization, device):
-                _log_info("模型较大但未检测到 accelerate，回退为常规 CUDA 加载。")
-            elif (_variant_size_billions(variant) or 0) >= 9.0:
-                _log_info("9B 模型在 24GB 级显卡上默认使用单卡直载，优先保证稳定性和响应速度。")
-            else:
-                _log_info("小模型默认使用常规 CUDA 加载，避免 auto device_map 带来的额外开销。")
-    
-    return kwargs, qcfg, resolved_attention_backend, allow_attn_fallback
+            _log_info("小模型默认使用常规 CUDA 加载，避免 auto device_map 带来的额外开销。")
+
+    return kwargs, resolved_attention_backend, allow_attn_fallback
 
 
-def load_text_model(variant: str, quantization: str, device: str, attention_backend: Optional[str] = None):
+def load_text_model(variant: str, device: str, attention_backend: Optional[str] = None):
     """加载文本模型，带缓存机制"""
-    _check_transformers_support()
-    model_dir = ensure_model(variant, mode="text")
     run_device = resolve_device(device)
     resolved_attention_backend = _normalize_attention_backend(attention_backend)
+    _check_transformers_support()
+    model_dir = ensure_model(variant, mode="text")
     
     # 创建缓存签名
-    signature = (str(model_dir), quantization, run_device, resolved_attention_backend)
+    signature = (str(model_dir), run_device, resolved_attention_backend)
     
     # 检查缓存
     cache = _MODEL_CACHE["text"]
@@ -758,16 +848,16 @@ def load_text_model(variant: str, quantization: str, device: str, attention_back
     
     if run_device == "cuda":
         _prepare_cuda_for_load()
-    
-    # 加载tokenizer
+
+    # 加载tokenizer（Transformers 路径）
     tokenizer = _load_tokenizer(model_dir)
     
     # 获取加载参数
-    kwargs, qcfg, resolved_attention_backend, allow_attn_fallback = _get_model_loading_kwargs(
-        variant, quantization, run_device, resolved_attention_backend
+    kwargs, resolved_attention_backend, allow_attn_fallback = _get_model_loading_kwargs(
+        variant, run_device, resolved_attention_backend
     )
     
-    _log_major(f"正在加载文本模型: {variant} | 量化: {quantization} | 注意力: {resolved_attention_backend}")
+    _log_major(f"正在加载文本模型: {variant} | 注意力: {resolved_attention_backend}")
     
     # 加载模型
     model = _load_pretrained_with_fallback(
@@ -779,24 +869,20 @@ def load_text_model(variant: str, quantization: str, device: str, attention_back
         allow_attn_fallback,
     )
     
-    # 验证量化
-    if qcfg is not None:
-        _assert_quant_applied(model, quantization, "Text")
-    
     # 设置为评估模式
     model.eval()
-    if qcfg is None and not hasattr(model, "hf_device_map"):
+    if not hasattr(model, "hf_device_map"):
         model.to(run_device)
     
-    # 编译模型以加速（仅CUDA，且非量化）
-    if ENABLE_TORCH_COMPILE and run_device == "cuda" and qcfg is None and hasattr(torch, "compile"):
+    # 编译模型以加速（仅CUDA）
+    if ENABLE_TORCH_COMPILE and run_device == "cuda" and hasattr(torch, "compile"):
         try:
             _log_info("尝试编译模型以加速推理...")
             model = torch.compile(model, mode="reduce-overhead")
         except Exception as e:
             _log_info(f"模型编译失败（不影响使用）: {e}")
     
-    _log_major(f"文本模型加载完成 | 规格={variant} | 设备={run_device} | 量化={quantization}")
+    _log_major(f"文本模型加载完成 | 规格={variant} | 设备={run_device}")
     
     # 更新缓存
     cache["signature"] = signature
@@ -806,7 +892,7 @@ def load_text_model(variant: str, quantization: str, device: str, attention_back
     return model, tokenizer, run_device
 
 
-def load_vl_model(variant: str, quantization: str, device: str, attention_backend: Optional[str] = None):
+def load_vl_model(variant: str, device: str, attention_backend: Optional[str] = None):
     """加载视觉语言模型，带缓存机制"""
     _check_transformers_support()
     model_dir = ensure_model(variant, mode="vl")
@@ -814,7 +900,7 @@ def load_vl_model(variant: str, quantization: str, device: str, attention_backen
     resolved_attention_backend = _normalize_attention_backend(attention_backend)
     
     # 创建缓存签名
-    signature = (str(model_dir), quantization, run_device, resolved_attention_backend)
+    signature = (str(model_dir), run_device, resolved_attention_backend)
     
     # 检查缓存
     cache = _MODEL_CACHE["vl"]
@@ -833,11 +919,11 @@ def load_vl_model(variant: str, quantization: str, device: str, attention_backen
     tokenizer = _load_tokenizer(model_dir)
     
     # 获取加载参数
-    kwargs, qcfg, resolved_attention_backend, allow_attn_fallback = _get_model_loading_kwargs(
-        variant, quantization, run_device, resolved_attention_backend
+    kwargs, resolved_attention_backend, allow_attn_fallback = _get_model_loading_kwargs(
+        variant, run_device, resolved_attention_backend
     )
     
-    _log_major(f"正在加载多模态模型: {variant} | 量化: {quantization} | 注意力: {resolved_attention_backend}")
+    _log_major(f"正在加载多模态模型: {variant} | 注意力: {resolved_attention_backend}")
     
     # 加载模型
     model = _load_pretrained_with_fallback(
@@ -849,16 +935,12 @@ def load_vl_model(variant: str, quantization: str, device: str, attention_backen
         allow_attn_fallback,
     )
     
-    # 验证量化
-    if qcfg is not None:
-        _assert_quant_applied(model, quantization, "VL")
-    
     # 设置为评估模式
     model.eval()
-    if qcfg is None and not hasattr(model, "hf_device_map"):
+    if not hasattr(model, "hf_device_map"):
         model.to(run_device)
     
-    _log_major(f"多模态模型加载完成 | 规格={variant} | 设备={run_device} | 量化={quantization}")
+    _log_major(f"多模态模型加载完成 | 规格={variant} | 设备={run_device}")
     
     # 更新缓存
     cache["signature"] = signature
@@ -872,7 +954,6 @@ def load_vl_model(variant: str, quantization: str, device: str, attention_backen
 def generate_text(
     *,
     variant: str,
-    quantization: str,
     device: str,
     attention_backend: Optional[str],
     messages,
@@ -886,8 +967,8 @@ def generate_text(
     torch.manual_seed(seed)
     
     # 加载模型（使用缓存）
-    model, tokenizer, run_device = load_text_model(variant, quantization, device, attention_backend)
-    
+    model, tokenizer, run_device = load_text_model(variant, device, attention_backend)
+
     # 应用chat template
     prompt = apply_chat_template(tokenizer, messages)
     
@@ -936,7 +1017,6 @@ def generate_text(
 def generate_vision_text(
     *,
     variant: str,
-    quantization: str,
     device: str,
     attention_backend: Optional[str],
     images,
@@ -951,7 +1031,7 @@ def generate_vision_text(
     torch.manual_seed(seed)
     
     # 加载模型（使用缓存）
-    model, tokenizer, processor, run_device = load_vl_model(variant, quantization, device, attention_backend)
+    model, tokenizer, processor, run_device = load_vl_model(variant, device, attention_backend)
     
     # 处理图像
     if not isinstance(images, list):

@@ -1,21 +1,19 @@
 model:
   default_variant: "Qwen3.5-2B"
-  quantization: "无"
   device: "cuda"  # cuda / cpu
 
 runtime:
   default_attention_backend: "SDPA"  # SDPA / FlashAttention-2 / Eager
-  auto_upgrade_transformers: true  # Missing qwen3_5 support -> auto install latest transformers source build
   prefer_optimized_attention: true  # Try FlashAttention2/SDPA first, fall back automatically if unsupported
   enable_torch_compile: false  # Conservative default; enable only if your torch/cuda stack is stable
 
 openai:
   base_url: "https://api.psydo.top/v1"
   model: "gpt-5.4"
-  api_key: "sk-99101041d4e870dc88517f522fdf3de7b51e19475f447619b078b4542a8651f9"  # Optional. Prefer environment variables for secrets.
+  api_key: "sk-"  # Optional. Prefer environment variables for secrets.
   api_key_env: ""
   timeout_seconds: 90
-  user_agent: "ComfyUI-IAT/1.22"
+  user_agent: "ComfyUI-IAT/2.0"
 
 logging:
   verbose: false

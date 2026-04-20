@@ -1,5 +1,25 @@
 # Update Notes
 
+## 2026-04-20 (v2.0.0)
+
+### 1) 版本号更新
+- 插件版本更新到 `2.0.0`。
+- 默认 `user_agent` 更新为 `ComfyUI-IAT/2.0`。
+
+### 2) Qwen3.5 运行时策略收敛（仅官方原版）
+- 移除量化与 GGUF 路径，文本与视觉节点统一走官方原版模型分支。
+- 运行时不再自动升级依赖，`transformers` 不满足要求时返回 `E5001` 并提示手动修复命令。
+- 模型下载目录固定为 `ComfyUI/models/diffusion_models`。
+- 下载顺序统一为 `ModelScope -> HuggingFace`。
+
+### 3) 下载稳定性增强
+- 保留并沿用下载锁、状态文件、分片完整性校验与缺失补齐逻辑。
+- 使用 `resume_download=True` 进行断点续传，降低中断下载的重复成本。
+
+### 4) 文档与安装器一致性修正
+- README / INSTALL / USAGE / TROUBLESHOOTING 全量同步到当前真实行为。
+- `install.py` 改为仅做依赖安装与兼容性检查，不再自动拉取 transformers 源码包。
+
 ## 2026-04-17 (v1.22.0)
 
 ### 1) 版本号更新

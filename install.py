@@ -5,11 +5,10 @@ import os
 import subprocess
 import sys
 
+from packaging import version
+
 QWEN35_MODEL_TYPE = "qwen3_5"
-TRANSFORMERS_UPGRADE_SOURCES = (
-    "git+https://github.com/huggingface/transformers.git",
-    "https://github.com/huggingface/transformers/archive/refs/heads/main.zip",
-)
+MIN_TRANSFORMERS_FOR_QWEN35 = "5.2.0"
 
 
 def _run(cmd: list[str]) -> int:
@@ -18,8 +17,7 @@ def _run(cmd: list[str]) -> int:
     return subprocess.call(cmd, cwd=os.path.dirname(os.path.realpath(__file__)))
 
 
-def _supports_qwen35_architecture() -> tuple[bool, str]:
-    """检查当前 transformers 是否已支持 qwen3_5 架构。"""
+def _load_transformers():
     for name in list(sys.modules):
         if name == "transformers" or name.startswith("transformers."):
             sys.modules.pop(name, None)
@@ -27,12 +25,14 @@ def _supports_qwen35_architecture() -> tuple[bool, str]:
     try:
         transformers = importlib.import_module("transformers")
     except Exception as exc:
-        return False, f"transformers import failed: {exc}"
+        return None, f"transformers import failed: {exc}"
+    return transformers, ""
 
-    current = getattr(transformers, "__version__", "unknown")
+
+def _supports_qwen35_architecture(transformers) -> bool:
     try:
         transformers.AutoConfig.for_model(QWEN35_MODEL_TYPE)
-        return True, current
+        return True
     except Exception:
         pass
 
@@ -40,42 +40,42 @@ def _supports_qwen35_architecture() -> tuple[bool, str]:
         cfg_auto = importlib.import_module("transformers.models.auto.configuration_auto")
         config_mapping = getattr(cfg_auto, "CONFIG_MAPPING", {})
         if QWEN35_MODEL_TYPE in config_mapping:
-            return True, current
+            return True
     except Exception:
         pass
 
-    return False, current
+    return False
+
+
+def _manual_transformers_upgrade_command() -> str:
+    return f'"{sys.executable}" -m pip install --upgrade "transformers>={MIN_TRANSFORMERS_FOR_QWEN35}"'
 
 
 def _ensure_transformers_support() -> int:
-    """当检测到缺少 qwen3_5 支持时，尝试升级 transformers 源码包。"""
-    supported, detail = _supports_qwen35_architecture()
-    if supported:
-        print(f"[IAT] transformers {detail} already supports {QWEN35_MODEL_TYPE}.")
+    """检查 transformers 版本和架构支持，不做自动升级。"""
+    transformers, import_error = _load_transformers()
+    if transformers is None:
+        print(f"[IAT][E5001] {import_error}")
+        print(f"[IAT][E5001] 修复命令: {_manual_transformers_upgrade_command()}")
+        return 1
+
+    current = getattr(transformers, "__version__", "0.0.0")
+    issues: list[str] = []
+
+    if version.parse(current) < version.parse(MIN_TRANSFORMERS_FOR_QWEN35):
+        issues.append(f"requires transformers>={MIN_TRANSFORMERS_FOR_QWEN35} (current: {current})")
+    if not _supports_qwen35_architecture(transformers):
+        issues.append(f"current transformers build does not register '{QWEN35_MODEL_TYPE}'")
+
+    if not issues:
+        print(f"[IAT] transformers {current} supports {QWEN35_MODEL_TYPE}.")
         return 0
 
     print(
-        "[IAT] Installed transformers build does not expose "
-        f"{QWEN35_MODEL_TYPE}. Attempting source upgrade."
+        "[IAT][E5001] Transformers 版本或架构不满足要求："
+        f" {'; '.join(issues)}"
     )
-    for source in TRANSFORMERS_UPGRADE_SOURCES:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", source]
-        if _run(cmd) == 0:
-            supported_after, new_detail = _supports_qwen35_architecture()
-            if supported_after:
-                print(f"[IAT] transformers {new_detail} now supports {QWEN35_MODEL_TYPE}.")
-                return 0
-
-            print(
-                "[IAT] Source upgrade finished, but this process could not re-verify "
-                f"{QWEN35_MODEL_TYPE}. Restart ComfyUI if the old package is still cached."
-            )
-            return 0
-
-    print(
-        "[IAT] Failed to install a transformers build with qwen3_5 support. "
-        f"Please run: {sys.executable} -m pip install --upgrade {TRANSFORMERS_UPGRADE_SOURCES[0]}"
-    )
+    print(f"[IAT][E5001] 修复命令: {_manual_transformers_upgrade_command()}")
     return 1
 
 

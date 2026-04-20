@@ -22,9 +22,12 @@ from .qwen35_runtime import (
     ATTENTION_OPTIONS,
     DEFAULT_ATTENTION_BACKEND,
     DEVICE_OPTIONS,
-    QUANT_OPTIONS,
     TEXT_MODEL_CANDIDATES,
+    TEXT_MODEL_LABEL_TO_VARIANT,
+    TEXT_MODEL_OPTIONS_GROUPED,
     VL_MODEL_CANDIDATES,
+    VL_MODEL_LABEL_TO_VARIANT,
+    VL_MODEL_OPTIONS_GROUPED,
     generate_text,
     generate_vision_text,
     unload_all_models,
@@ -37,13 +40,12 @@ _OPENAI_CFG = (_CFG.get("openai") or {}) if isinstance(_CFG, dict) else {}
 _GEMINI_CFG = (_CFG.get("gemini") or {}) if isinstance(_CFG, dict) else {}
 _QWEN_COMPAT_CFG = (_CFG.get("qwen_compatible") or {}) if isinstance(_CFG, dict) else {}
 _DEFAULT_VARIANT = _MODEL_CFG.get("default_variant", "Qwen3.5-2B")
-_DEFAULT_QUANT = _MODEL_CFG.get("quantization", "无")
 _DEFAULT_DEVICE = _MODEL_CFG.get("device", "cuda")
 _DEFAULT_OPENAI_BASE_URL = (_OPENAI_CFG.get("base_url") or "https://api.openai.com/v1").strip()
 _DEFAULT_OPENAI_MODEL = (_OPENAI_CFG.get("model") or "gpt-4.1-mini").strip()
 _DEFAULT_OPENAI_API_KEY = (_OPENAI_CFG.get("api_key") or "").strip()
 _DEFAULT_OPENAI_API_KEY_ENV = (_OPENAI_CFG.get("api_key_env") or "OPENAI_API_KEY").strip()
-_DEFAULT_HTTP_USER_AGENT = (_OPENAI_CFG.get("user_agent") or "ComfyUI-IAT/1.22").strip()
+_DEFAULT_HTTP_USER_AGENT = (_OPENAI_CFG.get("user_agent") or "ComfyUI-IAT/2.0").strip()
 _CFG_FILE_NAME = os.path.basename(_CFG_PATH) or "config.yaml"
 TRANSLATION_TARGET_OPTIONS = ["English", "中文"]
 GPT_IMAGE_DETAIL_OPTIONS = ["auto", "low", "high"]
@@ -138,6 +140,14 @@ def _coerce_positive_int(value, default):
     except (TypeError, ValueError):
         return default
     return parsed if parsed > 0 else default
+
+
+def _to_text_variant(selection: str) -> str:
+    return TEXT_MODEL_LABEL_TO_VARIANT.get(selection, selection)
+
+
+def _to_vl_variant(selection: str) -> str:
+    return VL_MODEL_LABEL_TO_VARIANT.get(selection, selection)
 
 
 class GPTAPIError(RuntimeError):
@@ -836,16 +846,15 @@ def _register_gpt_api_routes():
 class Qwen35PromptEnhancerNode:
     @classmethod
     def INPUT_TYPES(cls):
-        # 获取默认模型，如果不存在则使用第一个可用模型
+        # 默认项优先使用配置中的真实 variant，再映射到分组展示标签
         default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else list(TEXT_MODEL_CANDIDATES.keys())[0]
-        default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "无"
+        default_variant_label = next((k for k, v in TEXT_MODEL_LABEL_TO_VARIANT.items() if v == default_variant), TEXT_MODEL_OPTIONS_GROUPED[0])
         default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "cuda"
         default_attention_backend = DEFAULT_ATTENTION_BACKEND if DEFAULT_ATTENTION_BACKEND in ATTENTION_OPTIONS else "SDPA"
         
         return {
             "required": {
-                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": default_variant}),
-                "quantization": (QUANT_OPTIONS, {"default": default_quant}),
+                "model_variant": (TEXT_MODEL_OPTIONS_GROUPED, {"default": default_variant_label}),
                 "device": (DEVICE_OPTIONS, {"default": default_device}),
                 "attention_backend": (ATTENTION_OPTIONS, {"default": default_attention_backend}),
                 "prompt_text": ("STRING", {"default": "", "multiline": True}),
@@ -868,7 +877,6 @@ class Qwen35PromptEnhancerNode:
     def enhance_prompt(
         self,
         model_variant,
-        quantization,
         device,
         attention_backend,
         prompt_text,
@@ -881,12 +889,12 @@ class Qwen35PromptEnhancerNode:
         keep_model_loaded,
         seed,
     ):
+        model_variant = _to_text_variant(model_variant)
         system_prompt = (custom_system_prompt or "").strip() or PROMPT_STYLES.get(enhancement_style, PROMPT_STYLES["Enhance"])
         user_prompt = (prompt_text or "").strip() or "Describe a cinematic scene in rich visual detail."
 
         text = generate_text(
             variant=model_variant,
-            quantization=quantization,
             device=device,
             attention_backend=attention_backend,
             messages=[
@@ -908,16 +916,14 @@ class Qwen35PromptEnhancerNode:
 class Qwen35ReversePromptNode:
     @classmethod
     def INPUT_TYPES(cls):
-        # 获取默认模型，如果不存在则使用第一个可用模型
         default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in VL_MODEL_CANDIDATES else list(VL_MODEL_CANDIDATES.keys())[0]
-        default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "无"
+        default_variant_label = next((k for k, v in VL_MODEL_LABEL_TO_VARIANT.items() if v == default_variant), VL_MODEL_OPTIONS_GROUPED[0])
         default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "cuda"
         default_attention_backend = DEFAULT_ATTENTION_BACKEND if DEFAULT_ATTENTION_BACKEND in ATTENTION_OPTIONS else "SDPA"
         
         return {
             "required": {
-                "model_variant": (list(VL_MODEL_CANDIDATES.keys()), {"default": default_variant}),
-                "quantization": (QUANT_OPTIONS, {"default": default_quant}),
+                "model_variant": (VL_MODEL_OPTIONS_GROUPED, {"default": default_variant_label}),
                 "device": (DEVICE_OPTIONS, {"default": default_device}),
                 "attention_backend": (ATTENTION_OPTIONS, {"default": default_attention_backend}),
                 "preset_prompt": (list(REVERSE_PRESETS.keys()), {"default": "Detailed Description"}),
@@ -945,7 +951,6 @@ class Qwen35ReversePromptNode:
     def reverse_prompt(
         self,
         model_variant,
-        quantization,
         device,
         attention_backend,
         preset_prompt,
@@ -961,6 +966,7 @@ class Qwen35ReversePromptNode:
         image_3=None,
         image_4=None,
     ):
+        model_variant = _to_vl_variant(model_variant)
         pil_images = _collect_pil_images(image, image_2, image_3, image_4)
         if len(pil_images) == 0:
             return ("[IAT] Please connect at least one IMAGE input for reverse prompt.",)
@@ -969,7 +975,6 @@ class Qwen35ReversePromptNode:
 
         text = generate_vision_text(
             variant=model_variant,
-            quantization=quantization,
             device=device,
             attention_backend=attention_backend,
             images=pil_images,
@@ -1141,9 +1146,8 @@ class GPTReversePromptNode:
 class QwenTranslatorNode:
     @classmethod
     def INPUT_TYPES(cls):
-        # 获取默认模型，如果不存在则使用第一个可用模型
         default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else list(TEXT_MODEL_CANDIDATES.keys())[0]
-        default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "无"
+        default_variant_label = next((k for k, v in TEXT_MODEL_LABEL_TO_VARIANT.items() if v == default_variant), TEXT_MODEL_OPTIONS_GROUPED[0])
         default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "cuda"
         default_attention_backend = DEFAULT_ATTENTION_BACKEND if DEFAULT_ATTENTION_BACKEND in ATTENTION_OPTIONS else "SDPA"
         
@@ -1151,8 +1155,7 @@ class QwenTranslatorNode:
             "required": {
                 "text": ("STRING", {"multiline": True, "default": "Please input text to translate."}),
                 "target_language": (TRANSLATION_TARGET_OPTIONS, {"default": "English"}),
-                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": default_variant}),
-                "quantization": (QUANT_OPTIONS, {"default": default_quant}),
+                "model_variant": (TEXT_MODEL_OPTIONS_GROUPED, {"default": default_variant_label}),
                 "device": (DEVICE_OPTIONS, {"default": default_device}),
                 "attention_backend": (ATTENTION_OPTIONS, {"default": default_attention_backend}),
                 "max_tokens": ("INT", {"default": 512, "min": 32, "max": 2048}),
@@ -1167,7 +1170,8 @@ class QwenTranslatorNode:
     FUNCTION = "translate"
     CATEGORY = "IAT/Qwen3.5"
 
-    def translate(self, text, target_language, model_variant, quantization, device, attention_backend, max_tokens, temperature, keep_model_loaded, seed):
+    def translate(self, text, target_language, model_variant, device, attention_backend, max_tokens, temperature, keep_model_loaded, seed):
+        model_variant = _to_text_variant(model_variant)
         src = (text or "").strip()
         if not src:
             return ("",)
@@ -1180,7 +1184,6 @@ class QwenTranslatorNode:
         target_prompt = "natural English" if target_code == "en" else "自然流畅的中文"
         response = generate_text(
             variant=model_variant,
-            quantization=quantization,
             device=device,
             attention_backend=attention_backend,
             messages=[
@@ -1205,17 +1208,15 @@ class QwenTranslatorNode:
 class QwenKontextTranslatorNode:
     @classmethod
     def INPUT_TYPES(cls):
-        # 获取默认模型，如果不存在则使用第一个可用模型
         default_variant = _DEFAULT_VARIANT if _DEFAULT_VARIANT in TEXT_MODEL_CANDIDATES else list(TEXT_MODEL_CANDIDATES.keys())[0]
-        default_quant = _DEFAULT_QUANT if _DEFAULT_QUANT in QUANT_OPTIONS else "无"
+        default_variant_label = next((k for k, v in TEXT_MODEL_LABEL_TO_VARIANT.items() if v == default_variant), TEXT_MODEL_OPTIONS_GROUPED[0])
         default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "cuda"
         default_attention_backend = DEFAULT_ATTENTION_BACKEND if DEFAULT_ATTENTION_BACKEND in ATTENTION_OPTIONS else "SDPA"
         
         return {
             "required": {
                 "text": ("STRING", {"multiline": True, "default": "Please input editing instruction."}),
-                "model_variant": (list(TEXT_MODEL_CANDIDATES.keys()), {"default": default_variant}),
-                "quantization": (QUANT_OPTIONS, {"default": default_quant}),
+                "model_variant": (TEXT_MODEL_OPTIONS_GROUPED, {"default": default_variant_label}),
                 "device": (DEVICE_OPTIONS, {"default": default_device}),
                 "attention_backend": (ATTENTION_OPTIONS, {"default": default_attention_backend}),
                 "max_tokens": ("INT", {"default": 512, "min": 32, "max": 2048}),
@@ -1230,14 +1231,14 @@ class QwenKontextTranslatorNode:
     FUNCTION = "optimize_prompt"
     CATEGORY = "IAT/Qwen3.5"
 
-    def optimize_prompt(self, text, model_variant, quantization, device, attention_backend, max_tokens, temperature, keep_model_loaded, seed):
+    def optimize_prompt(self, text, model_variant, device, attention_backend, max_tokens, temperature, keep_model_loaded, seed):
+        model_variant = _to_text_variant(model_variant)
         src = (text or "").strip()
         if not src:
             return ("",)
 
         response = generate_text(
             variant=model_variant,
-            quantization=quantization,
             device=device,
             attention_backend=attention_backend,
             messages=[

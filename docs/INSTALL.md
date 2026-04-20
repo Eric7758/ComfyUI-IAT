@@ -77,12 +77,10 @@ Edit `config.yaml` in the plugin root directory:
 ```yaml
 model:
   default_variant: "Qwen3.5-2B"
-  quantization: "无"
   device: "cuda"
 
 runtime:
   default_attention_backend: "SDPA"
-  auto_upgrade_transformers: true
   prefer_optimized_attention: true
   enable_torch_compile: false
 
@@ -92,7 +90,7 @@ openai:
   api_key: ""
   api_key_env: "OPENAI_API_KEY"
   timeout_seconds: 60
-  user_agent: "ComfyUI-IAT/1.22"
+  user_agent: "ComfyUI-IAT/2.0"
 
 logging:
   verbose: false
@@ -128,12 +126,13 @@ qwen_compatible:
 - `Qwen3.5-2B` - Balanced speed/quality
 - `Qwen3.5-4B` - Good quality for mid-range GPUs
 - `Qwen3.5-9B` - High quality
-- `Qwen3.5-27B` - Best quality, requires large VRAM or aggressive quantization
+- `Qwen3.5-27B` - Best quality, requires large VRAM
+- `Qwen3.6-35B-A3B` - Large-scale reasoning, highest hardware requirement
 
-#### Quantization Options
-- `无` - Best quality, highest VRAM
-- `8-bit` - Good quality, medium VRAM
-- `4-bit` - Acceptable quality, lowest VRAM
+#### Runtime Behavior
+- 仅支持官方原版模型路径（无量化/GGUF分支）。
+- 运行时不会自动升级依赖。
+- 若 transformers 不满足要求，将报 `E5001` 并给出手动修复命令。
 
 #### Device Options
 - `cuda` - Use NVIDIA GPU
@@ -150,7 +149,7 @@ qwen_compatible:
 
 On first use, the plugin will automatically download required models to:
 ```
-ComfyUI/models/LLM/
+ComfyUI/models/diffusion_models/
 ```
 
 Download sources (in order):
@@ -170,15 +169,15 @@ python install.py
 #### Issue: `model type 'qwen3_5' but Transformers does not recognize this architecture`
 **Solution:**
 ```bash
-python install.py
+python -m pip install --upgrade "transformers>=5.2.0"
 ```
-If the plugin auto-upgrades `transformers` during runtime, restart ComfyUI once and run the node again.
+Then restart ComfyUI and run the node again.
 
 #### Issue: "CUDA out of memory"
 **Solutions:**
 1. Use smaller model variant (e.g., 0.8B or 2B)
-2. Enable quantization (8-bit or 4-bit)
-3. Close other GPU-intensive applications
+2. Close other GPU-intensive applications
+3. Reduce `max_tokens`
 
 #### Issue: Model download fails
 **Solutions:**
@@ -189,8 +188,8 @@ If the plugin auto-upgrades `transformers` during runtime, restart ComfyUI once 
 #### Issue: Slow generation
 **Solutions:**
 1. Use smaller model variant
-2. Enable quantization
-3. Check GPU utilization
+2. Check GPU utilization
+3. Keep model loaded for repeated runs (`keep_model_loaded = True`)
 4. Reduce max_tokens parameter
 
 ### Getting Help

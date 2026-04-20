@@ -72,13 +72,11 @@ Edit `config.yaml` to customize default settings:
 
 ```yaml
 model:
-  default_variant: "Qwen3.5-2B"    # Default model variant (0.8B/2B/4B/9B/27B)
-  quantization: "无"                  # Quantization mode
+  default_variant: "Qwen3.5-2B"      # Default model variant
   device: "cuda"                      # Device: cuda, cpu
 
 runtime:
   default_attention_backend: "SDPA"  # SDPA / FlashAttention-2 / Eager
-  auto_upgrade_transformers: true     # Auto-install latest transformers source build if qwen3_5 is missing
   prefer_optimized_attention: true    # Try FlashAttention2/SDPA first, then fall back automatically
   enable_torch_compile: false         # Conservative default; enable only if your torch/cuda stack is stable
 
@@ -88,7 +86,7 @@ openai:
   api_key: ""                            # Optional. Prefer OPENAI_API_KEY env var
   api_key_env: "OPENAI_API_KEY"         # Environment variable name used when api_key is empty
   timeout_seconds: 60                    # HTTP timeout for vision API requests
-  user_agent: "ComfyUI-IAT/1.22"        # Override only if your proxy requires a custom client signature
+  user_agent: "ComfyUI-IAT/2.0"         # Override only if your proxy requires a custom client signature
 
 logging:
   verbose: false                      # Enable verbose logging
@@ -118,6 +116,21 @@ qwen_compatible:
 ```
 
 ### 📖 Usage
+
+Model selection now uses official `model_variant` entries only:
+- `Qwen3.5-0.8B`
+- `Qwen3.5-2B`
+- `Qwen3.5-4B`
+- `Qwen3.5-9B`
+- `Qwen3.5-27B`
+- `Qwen3.6-35B-A3B`
+
+Model download path and fallback are fixed:
+- Path: `ComfyUI/models/diffusion_models`
+- Source order: `ModelScope -> HuggingFace`
+
+For production troubleshooting with concise error codes and trace IDs, see:
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 
 #### 1. Prompt Enhancement
 
@@ -182,7 +195,7 @@ Use **Qwen Kontext Translator** for image editing:
 - Python 3.8+
 - ComfyUI
 - PyTorch 2.0+
-- Transformers 5.2.0+ (if the installed build still lacks `qwen3_5`, the plugin will auto-upgrade from source and ask for a restart)
+- Transformers 5.2.0+ (if your build lacks `qwen3_5`, runtime raises `E5001` with a manual fix command)
 - 4GB+ VRAM (8GB+ recommended)
 
 ### 📦 Model Support
@@ -191,43 +204,14 @@ Use **Qwen Kontext Translator** for image editing:
 
 All Qwen3.5 models support **text + image + video** input with **text** output:
 
-**Small Models (4-8GB VRAM):**
-| Model | Size | VRAM (FP16) | VRAM (4-bit) | Best For |
-|-------|------|-------------|--------------|----------|
-| Qwen3.5-0.8B | ~0.9B | ~2GB | ~1GB | Fast inference, low memory |
-| Qwen3.5-2B | ~2B | ~5GB | ~2GB | Balanced speed/quality |
-| Qwen3.5-4B | ~5B | ~10GB | ~3GB | Good quality on mid-range GPUs |
-
-**Medium Models (8-16GB VRAM):**
-| Model | Size | VRAM (FP16) | VRAM (4-bit) | Best For |
-|-------|------|-------------|--------------|----------|
-| Qwen3.5-9B | ~10B | ~20GB | ~6GB | High quality, recommended |
-
-**Large Models (16GB+ VRAM or GGUF):**
-| Model | Size | VRAM (FP16) | VRAM (4-bit) | Best For |
-|-------|------|-------------|--------------|----------|
-| Qwen3.5-27B | ~28B | ~56GB | ~16GB | Best quality, use GGUF for consumer GPUs |
-
-**Quantization Options:**
-- 无 - Best quality
-- 8-bit - Reduced memory
-- 4-bit - Minimum memory
-
-**GGUF Support for Consumer GPUs:**
-
-For larger models (9B, 27B) on consumer GPUs, use GGUF quantized versions:
-
-| Quantization | 9B VRAM | 27B VRAM | Quality |
-|--------------|---------|----------|---------|
-| Q4_K_M | ~6GB | ~18GB | Good |
-| Q5_K_M | ~7GB | ~21GB | Better |
-| Q6_K | ~8GB | ~24GB | Best |
-| Q8_0 | ~10GB | ~30GB | Excellent |
-
-Recommended GGUF sources:
-- `bartowski/Qwen_Qwen3.5-9B-GGUF`
-- `bartowski/Qwen_Qwen3.5-27B-GGUF`
-- `unsloth/Qwen3.5-9B-GGUF`
+| Model | Size | VRAM (FP16/BF16) | Best For |
+|-------|------|------------------|----------|
+| Qwen3.5-0.8B | ~0.9B | ~2GB | Fast inference, lowest memory |
+| Qwen3.5-2B | ~2B | ~5GB | Balanced speed/quality |
+| Qwen3.5-4B | ~5B | ~10GB | Better quality on mid-range GPUs |
+| Qwen3.5-9B | ~10B | ~20GB | High quality |
+| Qwen3.5-27B | ~28B | ~56GB | Best quality |
+| Qwen3.6-35B-A3B | ~35B (A3B) | depends on hardware | Large-scale reasoning tasks |
 
 ### 📝 Changelog
 
@@ -299,13 +283,11 @@ bash install.sh
 
 ```yaml
 model:
-  default_variant: "Qwen3.5-2B"    # 默认模型版本 (0.8B/2B/4B/9B/27B)
-  quantization: "无"                   # 量化模式
+  default_variant: "Qwen3.5-2B"      # 默认模型版本
   device: "cuda"                      # 设备: cuda, cpu
 
 runtime:
-  default_attention_backend: "SDPA"     # SDPA / FlashAttention-2 / Eager
-  auto_upgrade_transformers: true     # 若缺少 qwen3_5 架构支持，则自动安装最新版 transformers 源码包
+  default_attention_backend: "SDPA"   # SDPA / FlashAttention-2 / Eager
   prefer_optimized_attention: true    # 优先尝试 FlashAttention2/SDPA，失败时自动回退
   enable_torch_compile: false         # 保守默认值；仅在 torch/cuda 环境稳定时开启
 
@@ -315,7 +297,7 @@ openai:
   api_key: ""                            # 可选。更推荐使用环境变量
   api_key_env: "OPENAI_API_KEY"         # 当 api_key 为空时读取的环境变量名
   timeout_seconds: 60                    # 视觉 API 请求超时时间（秒）
-  user_agent: "ComfyUI-IAT/1.22"        # 仅当代理网关要求自定义客户端标识时再修改
+  user_agent: "ComfyUI-IAT/2.0"         # 仅当代理网关要求自定义客户端标识时再修改
 
 logging:
   verbose: false                      # 启用详细日志
@@ -345,6 +327,21 @@ qwen_compatible:
 ```
 
 ### 📖 使用方法
+
+模型选择仅保留官方原版 `model_variant`：
+- `Qwen3.5-0.8B`
+- `Qwen3.5-2B`
+- `Qwen3.5-4B`
+- `Qwen3.5-9B`
+- `Qwen3.5-27B`
+- `Qwen3.6-35B-A3B`
+
+模型下载目录和顺序固定为：
+- 目录：`ComfyUI/models/diffusion_models`
+- 下载顺序：`ModelScope -> HuggingFace`
+
+生产排障与错误码说明见：
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 
 #### 1. 提示词增强
 
@@ -408,7 +405,7 @@ qwen_compatible:
 - Python 3.8+
 - ComfyUI
 - PyTorch 2.0+
-- Transformers 5.2.0+（如果当前安装包仍不识别 `qwen3_5`，插件会自动升级源码版并提示重启）
+- Transformers 5.2.0+（若当前安装包不识别 `qwen3_5`，运行时会报 `E5001` 并给出手动修复命令）
 - 4GB+ 显存（建议 8GB+）
 
 ### 📦 模型支持
@@ -417,43 +414,14 @@ qwen_compatible:
 
 所有 Qwen3.5 模型都支持**文本 + 图像 + 视频**输入，**文本**输出：
 
-**小型模型（4-8GB 显存）：**
-| 模型 | 参数量 | FP16显存 | 4-bit显存 | 适用场景 |
-|------|--------|----------|-----------|----------|
-| Qwen3.5-0.8B | ~0.9B | ~2GB | ~1GB | 快速推理、低内存 |
-| Qwen3.5-2B | ~2B | ~5GB | ~2GB | 速度与质量平衡 |
-| Qwen3.5-4B | ~5B | ~10GB | ~3GB | 中高端显卡良好质量 |
-
-**中型模型（8-16GB 显存）：**
-| 模型 | 参数量 | FP16显存 | 4-bit显存 | 适用场景 |
-|------|--------|----------|-----------|----------|
-| Qwen3.5-9B | ~10B | ~20GB | ~6GB | 高质量，推荐 |
-
-**大型模型（16GB+ 显存或GGUF）：**
-| 模型 | 参数量 | FP16显存 | 4-bit显存 | 适用场景 |
-|------|--------|----------|-----------|----------|
-| Qwen3.5-27B | ~28B | ~56GB | ~16GB | 最佳质量，消费级显卡建议用GGUF |
-
-**量化选项：**
-- 无 - 最佳质量
-- 8-bit - 减少内存
-- 4-bit - 最小内存
-
-**消费级显卡GGUF支持：**
-
-对于消费级显卡运行大模型（9B、27B），建议使用GGUF量化版本：
-
-| 量化等级 | 9B显存 | 27B显存 | 质量 |
-|----------|--------|---------|------|
-| Q4_K_M | ~6GB | ~18GB | 良好 |
-| Q5_K_M | ~7GB | ~21GB | 更好 |
-| Q6_K | ~8GB | ~24GB | 最佳 |
-| Q8_0 | ~10GB | ~30GB | 优秀 |
-
-推荐GGUF源：
-- `bartowski/Qwen_Qwen3.5-9B-GGUF`
-- `bartowski/Qwen_Qwen3.5-27B-GGUF`
-- `unsloth/Qwen3.5-9B-GGUF`
+| 模型 | 参数量 | FP16/BF16 显存 | 适用场景 |
+|------|--------|----------------|----------|
+| Qwen3.5-0.8B | ~0.9B | ~2GB | 快速推理、最低内存 |
+| Qwen3.5-2B | ~2B | ~5GB | 速度与质量平衡 |
+| Qwen3.5-4B | ~5B | ~10GB | 中高端显卡更好质量 |
+| Qwen3.5-9B | ~10B | ~20GB | 高质量 |
+| Qwen3.5-27B | ~28B | ~56GB | 最佳质量 |
+| Qwen3.6-35B-A3B | ~35B (A3B) | 取决于硬件 | 大规模推理任务 |
 
 ### 📝 更新日志
 
