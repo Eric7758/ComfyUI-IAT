@@ -8,6 +8,7 @@
 > - 文本与视觉节点仅支持官方原版 `model_variant`。
 > - 模型下载目录固定为 `ComfyUI/models/diffusion_models`。
 > - 下载源顺序固定为 `ModelScope -> HuggingFace`。
+> - `runtime.offline_only: true` 时会完全跳过下载；本地模型即使校验不完整，也会继续尝试加载，直到实际加载时报错。
 
 ## Table of Contents
 - [Node Overview](#node-overview)

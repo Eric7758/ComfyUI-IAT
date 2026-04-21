@@ -183,6 +183,7 @@ def _cfg_logging_bool(name: str, default: bool) -> bool:
 
 PREFER_OPTIMIZED_ATTENTION = _cfg_bool("prefer_optimized_attention", True)
 ENABLE_TORCH_COMPILE = _cfg_bool("enable_torch_compile", False)
+OFFLINE_ONLY = _cfg_bool("offline_only", False)
 DEFAULT_ATTENTION_BACKEND = "SDPA"
 VERBOSE_LOGGING = _cfg_logging_bool("verbose", False)
 DOWNLOAD_RETRY_TIMES = 2
@@ -452,6 +453,15 @@ def _missing_weight_files(model_dir: Path) -> Set[str]:
     return {name for name in expected if not (model_dir / name).exists()}
 
 
+def _has_local_model_artifacts(model_dir: Path) -> bool:
+    if not model_dir.exists():
+        return False
+    try:
+        return any(not path.name.startswith(".iat.") for path in model_dir.iterdir())
+    except Exception:
+        return False
+
+
 def _is_model_complete(model_dir: Path, repo_id: str, mode: str) -> bool:
     if not model_dir.exists():
         return False
@@ -491,6 +501,21 @@ def _has_vl_processor_files(model_dir: Path) -> bool:
         "feature_extractor_config.json",
     )
     return any((model_dir / name).exists() for name in required_any)
+
+
+def _warn_incomplete_local_model(model_dir: Path, repo_id: str, mode: str) -> None:
+    problems: List[str] = []
+    if not _has_weights(model_dir):
+        problems.append("missing weights")
+    missing = _missing_weight_files(model_dir)
+    if missing:
+        problems.append(f"missing shards ({len(missing)})")
+    if mode == "vl" and not _has_vl_processor_files(model_dir):
+        problems.append("missing processor files")
+    summary = ", ".join(problems) if problems else "validation incomplete"
+    _log_warning(
+        f"本地模型目录校验未通过，仍继续尝试加载：{repo_id} @ {model_dir} ({summary})"
+    )
 
 
 def _download_from_hf(repo_id: str, local_dir: Path) -> bool:
@@ -541,13 +566,21 @@ def ensure_model(variant: str, mode: str) -> Path:
     for repo_id in candidates:
         model_dirs = _model_local_dirs(repo_id)
         for existing_dir in model_dirs:
-            with _model_dir_lock(existing_dir):
-                if _is_model_complete(existing_dir, repo_id, mode):
-                    if repo_id != candidates[0]:
-                        _log_info(f"使用候选回退仓库: {repo_id}")
-                    return existing_dir
+            if _is_model_complete(existing_dir, repo_id, mode):
+                if repo_id != candidates[0]:
+                    _log_info(f"使用候选回退仓库: {repo_id}")
+                return existing_dir
 
-        target = next((d for d in model_dirs if d.exists() and _has_weights(d)), model_dirs[0])
+        local_dirs = [d for d in model_dirs if _has_local_model_artifacts(d)]
+        if OFFLINE_ONLY:
+            if local_dirs:
+                target = next((d for d in local_dirs if _has_weights(d)), local_dirs[0])
+                _warn_incomplete_local_model(target, repo_id, mode)
+                return target
+            errors.append(f"{repo_id}: offline_only enabled and no local model artifacts found")
+            continue
+
+        target = next((d for d in local_dirs if _has_weights(d)), local_dirs[0] if local_dirs else model_dirs[0])
         with _model_dir_lock(target):
             if _is_model_complete(target, repo_id, mode):
                 if repo_id != candidates[0]:
@@ -583,6 +616,10 @@ def ensure_model(variant: str, mode: str) -> Path:
                     errors.append(f"{repo_id}: validation failed after {source_name} download")
                 except Exception as exc:
                     errors.append(f"{repo_id}: {source_name} download failed: {exc}")
+
+            if _has_local_model_artifacts(target):
+                _warn_incomplete_local_model(target, repo_id, mode)
+                return target
 
     _raise_runtime_error(
         "E2001",
@@ -748,11 +785,16 @@ def _strip_thinking_content(text: str) -> str:
 
 
 def _load_tokenizer(model_dir: Path):
+    common_kwargs = {"trust_remote_code": True}
+    if OFFLINE_ONLY:
+        common_kwargs["local_files_only"] = True
     try:
-        return AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
+        return AutoTokenizer.from_pretrained(str(model_dir), **common_kwargs)
     except Exception as exc:
         _log_info(f"快速 tokenizer 加载失败，回退慢速 tokenizer: {exc}")
-        return AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True, use_fast=False)
+        slow_kwargs = dict(common_kwargs)
+        slow_kwargs["use_fast"] = False
+        return AutoTokenizer.from_pretrained(str(model_dir), **slow_kwargs)
 
 
 def _clear_cache(kind: str) -> None:
@@ -829,6 +871,8 @@ def _get_model_loading_kwargs(variant: str, device: str, attention_backend: Opti
         "trust_remote_code": True,
         "low_cpu_mem_usage": True,
     }
+    if OFFLINE_ONLY:
+        kwargs["local_files_only"] = True
 
     attn_implementation, resolved_attention_backend, allow_attn_fallback = _resolve_attention_backend(attention_backend, device)
     if attn_implementation:
@@ -943,7 +987,10 @@ def load_vl_model(variant: str, device: str, attention_backend: Optional[str] = 
         _prepare_cuda_for_load()
     
     # 加载processor和tokenizer
-    processor = AutoProcessor.from_pretrained(str(model_dir), trust_remote_code=True)
+    processor_kwargs = {"trust_remote_code": True}
+    if OFFLINE_ONLY:
+        processor_kwargs["local_files_only"] = True
+    processor = AutoProcessor.from_pretrained(str(model_dir), **processor_kwargs)
     tokenizer = _load_tokenizer(model_dir)
     
     # 获取加载参数

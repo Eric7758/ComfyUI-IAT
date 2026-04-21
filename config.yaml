@@ -6,6 +6,7 @@ runtime:
   default_attention_backend: "SDPA"  # SDPA / FlashAttention-2 / Eager
   prefer_optimized_attention: true  # Try FlashAttention2/SDPA first, fall back automatically if unsupported
   enable_torch_compile: false  # Conservative default; enable only if your torch/cuda stack is stable
+  offline_only: false  # When true, never download; only use local model files and fail fast on local load errors
 
 openai:
   base_url: "https://api.psydo.top/v1"

@@ -87,6 +87,7 @@ runtime:
   default_attention_backend: "SDPA"  # SDPA / FlashAttention-2 / Eager
   prefer_optimized_attention: true    # Try FlashAttention2/SDPA first, then fall back automatically
   enable_torch_compile: false         # Conservative default; enable only if your torch/cuda stack is stable
+  offline_only: false                 # Skip all downloads and only try local model files
 
 openai:
   base_url: "https://api.openai.com/v1"  # OpenAI or compatible endpoint base URL
@@ -306,6 +307,7 @@ runtime:
   default_attention_backend: "SDPA"   # SDPA / FlashAttention-2 / Eager
   prefer_optimized_attention: true    # 优先尝试 FlashAttention2/SDPA，失败时自动回退
   enable_torch_compile: false         # 保守默认值；仅在 torch/cuda 环境稳定时开启
+  offline_only: false                 # 跳过所有下载，仅尝试本地模型文件
 
 openai:
   base_url: "https://api.openai.com/v1"  # OpenAI 或兼容接口根地址

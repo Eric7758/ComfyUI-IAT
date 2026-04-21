@@ -83,6 +83,7 @@ runtime:
   default_attention_backend: "SDPA"
   prefer_optimized_attention: true
   enable_torch_compile: false
+  offline_only: false
 
 openai:
   base_url: "https://api.openai.com/v1"
