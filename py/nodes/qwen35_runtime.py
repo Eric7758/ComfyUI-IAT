@@ -304,17 +304,32 @@ def _check_transformers_support() -> None:
     )
 
 
-def _get_llm_dir() -> Path:
-    # 固定使用 ComfyUI 根目录下的 models/diffusion_models，
-    # 不跟随 `diffusion_models -> unet` 这类映射别名，避免落到 models/unet。
-    model_dir = Path(folder_paths.models_dir) / "diffusion_models"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    return model_dir
+def _get_llm_base_dirs() -> List[Path]:
+    # 优先使用 diffusion_models，兼容读取 unet 目录中的同名模型。
+    # 写入和下载仍默认落在 diffusion_models。
+    roots = [
+        Path(folder_paths.models_dir) / "diffusion_models",
+        Path(folder_paths.models_dir) / "unet",
+    ]
+    unique: List[Path] = []
+    seen: Set[str] = set()
+    for root in roots:
+        key = str(root.resolve()) if root.exists() else str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        root.mkdir(parents=True, exist_ok=True)
+        unique.append(root)
+    return unique
+
+
+def _get_primary_llm_dir() -> Path:
+    return _get_llm_base_dirs()[0]
 
 
 def _get_offload_dir() -> Path:
     """获取CPU卸载目录，用于显存不足时"""
-    offload_dir = _get_llm_dir() / "offload"
+    offload_dir = _get_primary_llm_dir() / "offload"
     offload_dir.mkdir(parents=True, exist_ok=True)
     return offload_dir
 
@@ -327,7 +342,12 @@ def _normalize_local_name(repo_id: str) -> str:
 
 
 def _model_local_dir(repo_id: str) -> Path:
-    return _get_llm_dir() / _normalize_local_name(repo_id)
+    return _get_primary_llm_dir() / _normalize_local_name(repo_id)
+
+
+def _model_local_dirs(repo_id: str) -> List[Path]:
+    name = _normalize_local_name(repo_id)
+    return [base / name for base in _get_llm_base_dirs()]
 
 
 def _model_state_file(model_dir: Path) -> Path:
@@ -519,7 +539,15 @@ def ensure_model(variant: str, mode: str) -> Path:
 
     errors: List[str] = []
     for repo_id in candidates:
-        target = _model_local_dir(repo_id)
+        model_dirs = _model_local_dirs(repo_id)
+        for existing_dir in model_dirs:
+            with _model_dir_lock(existing_dir):
+                if _is_model_complete(existing_dir, repo_id, mode):
+                    if repo_id != candidates[0]:
+                        _log_info(f"使用候选回退仓库: {repo_id}")
+                    return existing_dir
+
+        target = next((d for d in model_dirs if d.exists() and _has_weights(d)), model_dirs[0])
         with _model_dir_lock(target):
             if _is_model_complete(target, repo_id, mode):
                 if repo_id != candidates[0]:
