@@ -518,6 +518,22 @@ def _warn_incomplete_local_model(model_dir: Path, repo_id: str, mode: str) -> No
     )
 
 
+def _raise_model_load_error(
+    *,
+    stage: str,
+    variant: str,
+    mode: str,
+    model_dir: Path,
+    exc: Exception,
+) -> None:
+    _raise_runtime_error(
+        "E2002",
+        f"本地模型加载失败：{variant}（{mode}）",
+        detail=f"stage={stage}; model_dir={model_dir}; offline_only={OFFLINE_ONLY}; cause={repr(exc)}",
+        cause=exc,
+    )
+
+
 def _download_from_hf(repo_id: str, local_dir: Path) -> bool:
     if hf_snapshot_download is None:
         return False
@@ -572,15 +588,16 @@ def ensure_model(variant: str, mode: str) -> Path:
                 return existing_dir
 
         local_dirs = [d for d in model_dirs if _has_local_model_artifacts(d)]
+        if local_dirs:
+            target = next((d for d in local_dirs if _has_weights(d)), local_dirs[0])
+            _warn_incomplete_local_model(target, repo_id, mode)
+            return target
+
         if OFFLINE_ONLY:
-            if local_dirs:
-                target = next((d for d in local_dirs if _has_weights(d)), local_dirs[0])
-                _warn_incomplete_local_model(target, repo_id, mode)
-                return target
             errors.append(f"{repo_id}: offline_only enabled and no local model artifacts found")
             continue
 
-        target = next((d for d in local_dirs if _has_weights(d)), local_dirs[0] if local_dirs else model_dirs[0])
+        target = _model_local_dir(repo_id)
         with _model_dir_lock(target):
             if _is_model_complete(target, repo_id, mode):
                 if repo_id != candidates[0]:
@@ -616,7 +633,6 @@ def ensure_model(variant: str, mode: str) -> Path:
                     errors.append(f"{repo_id}: validation failed after {source_name} download")
                 except Exception as exc:
                     errors.append(f"{repo_id}: {source_name} download failed: {exc}")
-
             if _has_local_model_artifacts(target):
                 _warn_incomplete_local_model(target, repo_id, mode)
                 return target
@@ -922,7 +938,16 @@ def load_text_model(variant: str, device: str, attention_backend: Optional[str] 
         _prepare_cuda_for_load()
 
     # 加载tokenizer（Transformers 路径）
-    tokenizer = _load_tokenizer(model_dir)
+    try:
+        tokenizer = _load_tokenizer(model_dir)
+    except Exception as exc:
+        _raise_model_load_error(
+            stage="tokenizer",
+            variant=variant,
+            mode="text",
+            model_dir=model_dir,
+            exc=exc,
+        )
     
     # 获取加载参数
     kwargs, resolved_attention_backend, allow_attn_fallback = _get_model_loading_kwargs(
@@ -932,14 +957,23 @@ def load_text_model(variant: str, device: str, attention_backend: Optional[str] 
     _log_major(f"正在加载文本模型: {variant} | 注意力: {resolved_attention_backend}")
     
     # 加载模型
-    model = _load_pretrained_with_fallback(
-        AutoModelForCausalLM,
-        model_dir,
-        kwargs,
-        "文本模型",
-        resolved_attention_backend,
-        allow_attn_fallback,
-    )
+    try:
+        model = _load_pretrained_with_fallback(
+            AutoModelForCausalLM,
+            model_dir,
+            kwargs,
+            "文本模型",
+            resolved_attention_backend,
+            allow_attn_fallback,
+        )
+    except Exception as exc:
+        _raise_model_load_error(
+            stage="text_model",
+            variant=variant,
+            mode="text",
+            model_dir=model_dir,
+            exc=exc,
+        )
     
     # 设置为评估模式
     model.eval()
@@ -990,8 +1024,26 @@ def load_vl_model(variant: str, device: str, attention_backend: Optional[str] = 
     processor_kwargs = {"trust_remote_code": True}
     if OFFLINE_ONLY:
         processor_kwargs["local_files_only"] = True
-    processor = AutoProcessor.from_pretrained(str(model_dir), **processor_kwargs)
-    tokenizer = _load_tokenizer(model_dir)
+    try:
+        processor = AutoProcessor.from_pretrained(str(model_dir), **processor_kwargs)
+    except Exception as exc:
+        _raise_model_load_error(
+            stage="processor",
+            variant=variant,
+            mode="vl",
+            model_dir=model_dir,
+            exc=exc,
+        )
+    try:
+        tokenizer = _load_tokenizer(model_dir)
+    except Exception as exc:
+        _raise_model_load_error(
+            stage="tokenizer",
+            variant=variant,
+            mode="vl",
+            model_dir=model_dir,
+            exc=exc,
+        )
     
     # 获取加载参数
     kwargs, resolved_attention_backend, allow_attn_fallback = _get_model_loading_kwargs(
@@ -1001,14 +1053,23 @@ def load_vl_model(variant: str, device: str, attention_backend: Optional[str] = 
     _log_major(f"正在加载多模态模型: {variant} | 注意力: {resolved_attention_backend}")
     
     # 加载模型
-    model = _load_pretrained_with_fallback(
-        AutoModelForVision2Seq,
-        model_dir,
-        kwargs,
-        "多模态模型",
-        resolved_attention_backend,
-        allow_attn_fallback,
-    )
+    try:
+        model = _load_pretrained_with_fallback(
+            AutoModelForVision2Seq,
+            model_dir,
+            kwargs,
+            "多模态模型",
+            resolved_attention_backend,
+            allow_attn_fallback,
+        )
+    except Exception as exc:
+        _raise_model_load_error(
+            stage="vl_model",
+            variant=variant,
+            mode="vl",
+            model_dir=model_dir,
+            exc=exc,
+        )
     
     # 设置为评估模式
     model.eval()
