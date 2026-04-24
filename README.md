@@ -39,6 +39,7 @@ ComfyUI-IAT provides powerful AI-driven text and image processing nodes for Comf
 | 🤖 **Vision API Reverse Prompt** | Image-to-Text | Generate prompts from images through OpenAI-compatible APIs, Gemini, and other vision providers |
 | 🌐 **Qwen Translator** | Translation | Translate Chinese/Japanese to natural English |
 | ✏️ **Qwen Kontext Translator** | Editing Optimization | Optimize editing instructions for image editing models |
+| 🎨 **Image Color Palette Extractor** | Color Analysis | Extract dominant colors and generate a ratio-based palette image |
 
 ### 🚀 Quick Start
 
@@ -257,6 +258,7 @@ ComfyUI-IAT 为 ComfyUI 工作流提供强大的 AI 驱动的文本和图像处�
 | 🤖 **Vision API 反推提示词** | 图像转文本 | 通过 OpenAI 兼容接口、Gemini 等视觉 API 从图像生成提示词 |
 | 🌐 **Qwen 翻译器** | 翻译 | 将中文/日文翻译成自然流畅的英文 |
 | ✏️ **Qwen 编辑提示词优化** | 编辑优化 | 为图像编辑模型优化编辑指令 |
+| 🎨 **图像主色调色板提取器** | 颜色分析 | 提取图片主色并输出按占比绘制的色条图 |
 
 ### 🚀 快速开始
 

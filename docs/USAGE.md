@@ -12,6 +12,7 @@
 
 ## Table of Contents
 - [Node Overview](#node-overview)
+- [Image Color Palette Extractor](#image-color-palette-extractor)
 - [Model Variants](#model-variants)
 - [Qwen3.5 Prompt Enhancer](#qwen35-prompt-enhancer)
 - [Qwen3.5 Reverse Prompt](#qwen35-reverse-prompt)
@@ -23,7 +24,7 @@
 
 ## Node Overview
 
-ComfyUI-IAT provides 5 powerful nodes for text and image processing:
+ComfyUI-IAT provides 6 nodes for text and image processing:
 
 | Node | Category | Purpose |
 |------|----------|---------|
@@ -32,6 +33,38 @@ ComfyUI-IAT provides 5 powerful nodes for text and image processing:
 | Vision API Reverse Prompt | IAT/Vision API | Generate prompts from images via OpenAI-compatible APIs, Gemini, and Qwen-compatible providers |
 | Qwen Translator | IAT/Qwen3.5 | Translate text to English |
 | Qwen Kontext Translator | IAT/Qwen3.5 | Optimize editing instructions |
+| Image Color Palette Extractor | IAT/Image | Extract dominant colors and render a ratio-based palette chart |
+
+## Image Color Palette Extractor
+
+### Purpose
+Extract dominant colors from one or more input images and output a vertical palette chart whose bar widths follow color ratio.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| image | IMAGE | required | Input image or image batch |
+| num_colors | Int | 6 | Number of dominant colors to extract (2-20) |
+| output_width | Int | 1000 | Output palette width |
+| output_height | Int | 400 | Output palette height |
+| min_ratio | Float | 0.01 | Ignore colors whose ratio is below this threshold |
+| sort_order | Dropdown | ratio_desc | `ratio_desc` / `ratio_asc` / `lightness` |
+
+### Outputs
+
+| Output | Type | Description |
+|--------|------|-------------|
+| palette_image | IMAGE | Palette bar image (batch-aware) |
+| color_info | STRING | Color details with HEX/RGB/ratio; batched outputs are separated by `Image N` blocks |
+
+### Example Workflow
+
+```
+Load Image → Image Color Palette Extractor by IAT → Save Image
+                                  ↓
+                              Show Text
+```
 
 ## Model Variants
 
