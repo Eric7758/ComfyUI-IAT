@@ -7,6 +7,7 @@ dependencies = [
   "transformers>=5.2.0",
   "torch>=2.0.0",
   "Pillow>=9.0.0",
+  "imageio-ffmpeg>=0.5.1",
   "numpy>=1.21.0",
   "PyYAML>=6.0",
   "packaging>=24.0",
