@@ -8,6 +8,7 @@ transformers>=5.2.0
 # 基础推理与图像处理依赖（在部分 ComfyUI 环境中可能未预装完整）
 torch>=2.0.0
 Pillow>=9.0.0
+imageio-ffmpeg>=0.5.1
 numpy>=1.21.0
 
 # 插件配置读取（config.yaml）
