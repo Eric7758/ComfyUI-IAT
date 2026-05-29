@@ -127,6 +127,12 @@ ComfyUI-IAT/
 4. **Update documentation**
 5. **Add example workflow** if applicable
 
+### WIP Node Workflow
+
+- If a newly added node is not validated yet, keep it in a local-only `backup/` folder first instead of `py/nodes/`.
+- The `backup/` folder is intentionally excluded from Git sync so unfinished nodes do not mix with the production node set.
+- After the node is verified end-to-end, move it into `py/nodes/`, update related runtime/dependency files, and sync it normally.
+
 ## Submitting Changes
 
 ### Before Submitting

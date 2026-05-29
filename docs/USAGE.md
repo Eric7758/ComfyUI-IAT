@@ -16,6 +16,7 @@
 - [Model Variants](#model-variants)
 - [Qwen3.5 Prompt Enhancer](#qwen35-prompt-enhancer)
 - [Qwen3.5 Reverse Prompt](#qwen35-reverse-prompt)
+- [Qwen3.5 Dataset RAG Reverse Prompt](#qwen35-dataset-rag-reverse-prompt)
 - [Vision API Reverse Prompt](#vision-api-reverse-prompt)
 - [Qwen Translator](#qwen-translator)
 - [Qwen Kontext Translator](#qwen-kontext-translator)
@@ -30,6 +31,7 @@ ComfyUI-IAT provides 6 nodes for text and image processing:
 |------|----------|---------|
 | Qwen3.5 Prompt Enhancer | IAT/Qwen3.5 | Enhance and optimize text prompts |
 | Qwen3.5 Reverse Prompt | IAT/Qwen3.5 | Generate prompts from images |
+| Qwen3.5 Dataset RAG Reverse Prompt | IAT/Qwen3.5 | Generate prompts in a selected dataset caption style |
 | Vision API Reverse Prompt | IAT/Vision API | Generate prompts from images via OpenAI-compatible APIs, Gemini, and Qwen-compatible providers |
 | Qwen Translator | IAT/Qwen3.5 | Translate text to English |
 | Qwen Kontext Translator | IAT/Qwen3.5 | Optimize editing instructions |
@@ -184,6 +186,47 @@ Generate text prompts from input images using vision-language models.
 [Load Image] → [Qwen3.5 Reverse Prompt] → [Show Text]
                     ↓
             [CLIP Text Encode] → [KSampler] → [Save Image]
+```
+
+## Qwen3.5 Dataset RAG Reverse Prompt
+
+### Purpose
+Generate a new prompt from one input image while matching the caption style of a selected local dataset knowledge base.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| model_variant | Dropdown | Official model list | Select official VL variant |
+| device | Dropdown | cuda | Computing device |
+| attention_backend | Dropdown | SDPA | Attention implementation |
+| dataset_name | Dropdown | First dataset JSON | Select one local prompt KB |
+| language | Dropdown | Auto | Output language |
+| few_shot_count | Int | 6 | Number of retrieved captions used as few-shot examples |
+| include_trigger_words | Boolean | True | Include dataset trigger words in generation context |
+| custom_instruction | String | "" | Extra generation instruction |
+| max_tokens | Int | 256 | Maximum output length |
+| temperature | Float | 0.1 | Creativity (0.0-1.5) |
+| top_p | Float | 0.9 | Nucleus sampling |
+| repetition_penalty | Float | 1.05 | Repetition penalty |
+| keep_model_loaded | Boolean | True | Keep model in memory |
+| seed | Int | 1 | Random seed |
+| image | IMAGE | required | Source image |
+
+### Notes
+
+- The node uses a two-stage flow: visual retrieval description first, final dataset-style prompt generation second.
+- In `Dataset RAG` mode, the input image is treated as an achromatic structure reference by default, so color/material proposals come from the dataset style rather than the source image palette.
+- Dataset JSON files are loaded from `datasets/prompts_kb/`.
+- Adding or editing dataset JSON files requires a ComfyUI restart to refresh the `dataset_name` dropdown.
+- Only one dataset is used per run; retrieval happens only inside that dataset's `captions`.
+
+### Example Workflow
+
+```
+[Load Image] → [Qwen3.5 Dataset RAG Reverse Prompt] → [Show Text]
+                            ↓
+                    [CLIP Text Encode] → [KSampler] → [Save Image]
 ```
 
 ## Vision API Reverse Prompt

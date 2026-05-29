@@ -1,0 +1,18 @@
+{
+  "dataset_name": "CMF_ChampagneSilver",
+  "version": "1.0",
+  "trigger_words": [
+    "champagne silver",
+    "satin metallic",
+    "premium industrial design"
+  ],
+  "captions": [
+    "product render, champagne silver finish, satin metallic surface, rounded aluminum body, clean studio background, soft reflection, premium industrial design",
+    "consumer electronics concept, curved shell, champagne silver material, brushed metal edge, minimal composition, commercial render lighting",
+    "close-up product shot, satin metallic coating, warm silver tone, smooth chamfer transition, high-end manufacturing aesthetic",
+    "three quarter product view, refined industrial design, champagne silver enclosure, controlled specular highlight, neutral seamless background",
+    "macro detail render, aluminum housing, premium surface treatment, satin metallic texture, clean geometric structure",
+    "hero product image, champagne silver body, elegant curvature, precision-machined detail, modern industrial styling"
+  ]
+}
+
