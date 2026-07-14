@@ -309,7 +309,7 @@ def _get_llm_base_dirs() -> List[Path]:
     # 优先使用 diffusion_models，兼容读取 unet 目录中的同名模型。
     # 写入和下载仍默认落在 diffusion_models。
     roots = [
-        Path(folder_paths.models_dir) / "diffusion_models",
+        *(Path(path) for path in folder_paths.get_folder_paths("diffusion_models")),
         Path(folder_paths.models_dir) / "unet",
     ]
     unique: List[Path] = []
