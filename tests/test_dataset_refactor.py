@@ -50,6 +50,80 @@ class DatasetRepositoryTests(unittest.TestCase):
             self.assertTrue(any("Missing caption" in warning for warning in record.warnings))
             self.assertEqual(record.trigger_words, ["trigger_a"])
 
+    def make_multiview_dataset(self, root: Path, missing_control: bool = False) -> Path:
+        dataset = root / "dataset_A"
+        metadata = {
+            "dataset_name": "dataset_A",
+            "version": "1.0",
+            "base_model": "Flux.2 Klein 9B",
+            "lora_name": "model_A",
+            "language": "zh",
+            "trigger_words": ["trigger_a"],
+        }
+        dataset.mkdir(parents=True)
+        (dataset / "dataset.json").write_text(json.dumps(metadata), encoding="utf-8")
+        roles = ("control1", "control2", "control3", "result")
+        for role in roles:
+            if missing_control and role == "control2":
+                continue
+            directory = dataset / f"dataset_A_{role}"
+            directory.mkdir()
+            for stem in ("000000", "000b00"):
+                Image.new("RGB", (8, 8), (20, 30, 40)).save(directory / f"{stem}.png")
+                if role == "result":
+                    (directory / f"{stem}.txt").write_text(f"{stem} caption", encoding="utf-8")
+        return dataset
+
+    def test_multiview_stem_grouping_and_result_caption(self):
+        with tempfile.TemporaryDirectory() as temp:
+            record = load_dataset_record(self.make_multiview_dataset(Path(temp)))
+        self.assertEqual(len(record.entries), 2)
+        self.assertEqual(record.entries[0].record_id, "000000")
+        self.assertEqual(set(record.entries[0].image_paths), {"control1", "control2", "control3", "result"})
+        self.assertEqual(record.entries[0].caption, "000000 caption")
+        self.assertEqual(record.entries[0].relative_image_paths["result"], "dataset_A_result/000000.png")
+
+    def test_nested_images_role_directories_are_supported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            dataset = self.make_multiview_dataset(Path(temp))
+            for role in ("control1", "control2", "control3", "result"):
+                source = dataset / f"dataset_A_{role}"
+                target = dataset / "images" / role
+                target.parent.mkdir(exist_ok=True)
+                source.rename(target)
+            record = load_dataset_record(dataset)
+        self.assertEqual(len(record.entries), 2)
+        self.assertEqual(record.entries[0].relative_image_paths["result"], "images/result/000000.png")
+
+    def test_retrieval_debug_includes_multiview_paths_and_roles(self):
+        with tempfile.TemporaryDirectory() as temp:
+            record = load_dataset_record(self.make_multiview_dataset(Path(temp)))
+            index = get_dataset_index(record, Path(temp) / "cache")
+            results, debug = index.retrieve("000000", top_k=1)
+        self.assertEqual(debug["reference_image_count"], 0)
+        self.assertEqual(set(results[0]["image_roles"]), {"control1", "control2", "control3", "result"})
+        self.assertIn("dataset_A_result/000000.png", results[0]["image_paths"]["result"])
+
+    def test_multiview_missing_control_is_warning_but_result_survives(self):
+        with tempfile.TemporaryDirectory() as temp:
+            record = load_dataset_record(self.make_multiview_dataset(Path(temp), missing_control=True))
+        self.assertEqual(len(record.entries), 2)
+        self.assertTrue(any("control2" in warning for warning in record.warnings))
+
+    def test_multiview_missing_result_or_caption_is_skipped(self):
+        with tempfile.TemporaryDirectory() as temp:
+            dataset = self.make_multiview_dataset(Path(temp))
+            for role in ("control1", "control2", "control3"):
+                Image.new("RGB", (8, 8), "white").save(dataset / f"dataset_A_{role}" / "000111.png")
+            Image.new("RGB", (8, 8), "white").save(dataset / "dataset_A_result" / "000111.png")
+            (dataset / "dataset_A_result" / "000111.txt").write_text("valid caption", encoding="utf-8")
+            (dataset / "dataset_A_result" / "000000.txt").unlink()
+            (dataset / "dataset_A_result" / "000b00.png").unlink()
+            record = load_dataset_record(dataset)
+        self.assertEqual(len(record.entries), 1)
+        self.assertEqual(record.entries[0].record_id, "000111")
+        self.assertTrue(any("caption" in warning for warning in record.warnings))
+
     def test_directory_requires_trigger_words(self):
         with tempfile.TemporaryDirectory() as temp:
             dataset = self.make_dataset(Path(temp))
@@ -107,7 +181,7 @@ class DatasetRepositoryTests(unittest.TestCase):
             results, debug = index.retrieve("红色 金属", top_k=1, seed=42)
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0]["record_id"], "images/0001")
-            self.assertTrue(debug["index_version"].startswith("hybrid-v2:"))
+            self.assertTrue(debug["index_version"].startswith("hybrid-v3:"))
             cached = get_dataset_index(record, cache)
             self.assertEqual(cached.fingerprint, index.fingerprint)
 
@@ -170,6 +244,54 @@ class DatasetRepositoryTests(unittest.TestCase):
             index.retrieve("query", Image.new("RGB", (4, 4)), top_k=1)
         self.assertEqual(encode_text.call_args.kwargs["device"], "cuda")
         self.assertEqual(encode_image.call_args.kwargs["device"], "cuda")
+
+    @patch("py.nodes.dataset_repository._encode_image_batch", return_value=[[1.0, 0.0], [0.0, 1.0]])
+    @patch("py.nodes.dataset_repository._encode_text", return_value=[1.0, 0.0])
+    def test_multiview_query_aggregates_image_embeddings(self, encode_text, encode_image_batch):
+        with tempfile.TemporaryDirectory() as temp:
+            record = load_dataset_record(self.make_multiview_dataset(Path(temp)))
+            index = DatasetIndex(
+                record,
+                "fingerprint",
+                text_embeddings=[[1.0, 0.0], [0.0, 1.0]],
+                image_embeddings=[[1.0, 0.0], [0.0, 1.0]],
+                gray_embeddings=[[1.0, 0.0], [0.0, 1.0]],
+                embedding_model_path="model",
+                embedding_device="cpu",
+            )
+            index.retrieve("query", reference_images=[Image.new("RGB", (4, 4)), Image.new("RGB", (4, 4))], top_k=1)
+        self.assertEqual(encode_image_batch.call_args.args[1].__len__(), 2)
+
+    @patch("py.nodes.dataset_repository._encode_image_batch")
+    @patch("py.nodes.dataset_repository._encode_text_batch")
+    @patch("py.nodes.dataset_repository._load_embedding_model")
+    @patch("py.nodes.dataset_repository._resolve_embedding_device", return_value="cpu")
+    def test_multiview_index_aggregates_each_entry_group(self, resolve_device, load_model, encode_text_batch, encode_image_batch):
+        encode_text_batch.return_value = [[1.0, 0.0], [0.0, 1.0]]
+        encode_image_batch.side_effect = [
+            [[1.0, 0.0]] * 8,
+            [[0.0, 1.0]] * 8,
+        ]
+        with tempfile.TemporaryDirectory() as temp:
+            record = load_dataset_record(self.make_multiview_dataset(Path(temp)))
+            index = get_dataset_index(record, Path(temp) / "cache", embedding_model_path="model")
+        self.assertEqual(len(index.image_embeddings), 2)
+        self.assertEqual(index.image_embeddings[0], [1.0, 0.0])
+        self.assertEqual(encode_image_batch.call_args.args[1].__len__(), 8)
+
+    @patch("py.nodes.dataset_repository._load_embedding_model")
+    @patch("py.nodes.dataset_repository._encode_text_batch", return_value=[[1.0, 0.0], [0.0, 1.0]])
+    @patch("py.nodes.dataset_repository._encode_image_batch", return_value=[[1.0, 0.0]] * 8)
+    @patch("py.nodes.dataset_repository._resolve_embedding_device", return_value="cpu")
+    def test_multiview_cache_uses_schema_v3(self, resolve_device, encode_image_batch, encode_text_batch, load_model):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            record = load_dataset_record(self.make_multiview_dataset(root))
+            cache_dir = root / "cache"
+            get_dataset_index(record, cache_dir, embedding_model_path="model")
+            payload = json.loads((cache_dir / "dataset_A.index.json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(len(payload["entries"][0]["image_paths"]), 4)
 
     def test_discovery_skips_index_cache_json(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -254,6 +376,43 @@ class BackendRequestTests(unittest.TestCase):
         self.assertEqual(payload["seed"], 9)
         self.assertEqual(payload["messages"][0]["content"], "generate")
 
+    @patch("py.nodes.llm_backends._request_json")
+    def test_remote_backends_send_all_reference_images(self, request_json):
+        request_json.return_value = {"message": {"content": "prompt"}}
+        images = [Image.new("RGB", (4, 4), color) for color in ("red", "green", "blue", "white")]
+        _generate_ollama(
+            model="qwen3.5:122b",
+            base_url="http://127.0.0.1:11434",
+            prompt="generate",
+            images=images,
+            max_tokens=64,
+            temperature=0.0,
+            top_p=1.0,
+            repetition_penalty=1.0,
+            seed=1,
+            timeout=10,
+            keep_alive=-1,
+            think=False,
+        )
+        self.assertEqual(len(request_json.call_args.args[1]["messages"][0]["images"]), 4)
+
+        request_json.return_value = {"choices": [{"message": {"content": "prompt"}}]}
+        _generate_vllm(
+            model="qwen3.5:122b",
+            base_url="http://127.0.0.1:8000/v1",
+            prompt="generate",
+            images=images,
+            max_tokens=64,
+            temperature=0.0,
+            top_p=1.0,
+            repetition_penalty=1.0,
+            seed=1,
+            timeout=10,
+            api_key="",
+        )
+        content = request_json.call_args.args[1]["messages"][0]["content"]
+        self.assertEqual(sum(item["type"] == "image_url" for item in content), 4)
+
 
 class NodeBehaviorTests(unittest.TestCase):
     def test_dataset_nodes_import_without_torch_and_expose_split_contract(self):
@@ -267,6 +426,16 @@ class NodeBehaviorTests(unittest.TestCase):
         self.assertEqual(len(picker.RETURN_TYPES), 4)
         generator = module.DatasetRAGPromptGeneratorNode()
         self.assertEqual(generator.RETURN_NAMES, ("prompt", "retrieved_captions", "retrieval_debug", "dataset_metadata"))
+        self.assertEqual(set(generator.INPUT_TYPES()["optional"]), {"image", "image_2", "image_3", "image_4"})
+
+    def test_reference_image_collection_supports_four_and_rejects_five(self):
+        import py.nodes.qwen35_dataset_rag_nodes as module
+        one = object()
+        with patch.object(module, "_tensor_to_pil_list", return_value=[Image.new("RGB", (4, 4))]):
+            self.assertEqual(len(module._collect_reference_images(one, one, one, one)), 4)
+        with self.assertRaisesRegex(DatasetError, "At most 4"):
+            with patch.object(module, "_tensor_to_pil_list", return_value=[Image.new("RGB", (4, 4))]):
+                module._collect_reference_images(one, one, one, one, one)
 
     def test_trigger_words_are_added_without_overwriting_model_output(self):
         from py.nodes.qwen35_dataset_rag_nodes import _ensure_trigger_words

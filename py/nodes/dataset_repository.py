@@ -20,6 +20,8 @@ _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 _TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
 _PUNCT_RE = re.compile(r"[^\w\s\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+", re.UNICODE)
+_CONTROL_ROLE_RE = re.compile(r"(?:^|[_\-\s])control([1-3])$", re.IGNORECASE)
+_IMAGE_ROLES = ("control1", "control2", "control3", "result")
 _EMBEDDING_MODELS: Dict[Tuple[str, str], Tuple[Any, Any]] = {}
 
 
@@ -37,6 +39,22 @@ class DatasetEntry:
     caption: str
     image_path: Optional[Path] = None
     relative_image_path: str = ""
+    image_paths: Dict[str, Path] = field(default_factory=dict)
+    relative_image_paths: Dict[str, str] = field(default_factory=dict)
+
+    def grouped_image_paths(self) -> Dict[str, Path]:
+        if self.image_paths:
+            return dict(self.image_paths)
+        if self.image_path is None:
+            return {}
+        return {"image": self.image_path}
+
+    def grouped_relative_image_paths(self) -> Dict[str, str]:
+        if self.relative_image_paths:
+            return dict(self.relative_image_paths)
+        if self.relative_image_path:
+            return {"image": self.relative_image_path}
+        return {}
 
 
 @dataclass
@@ -105,7 +123,7 @@ def _required_string(raw: Dict[str, Any], field_name: str, path: Path) -> str:
     return _normalize_whitespace(value)
 
 
-def _caption_for_image(image_path: Path) -> Optional[str]:
+def _caption_path_for_image(image_path: Path) -> Optional[Path]:
     caption_path = image_path.with_suffix(".txt")
     if not caption_path.is_file():
         # Windows datasets sometimes use an upper-case extension.
@@ -114,6 +132,13 @@ def _caption_for_image(image_path: Path) -> Optional[str]:
                 caption_path = candidate
                 break
     if not caption_path.is_file():
+        return None
+    return caption_path
+
+
+def _caption_for_image(image_path: Path) -> Optional[str]:
+    caption_path = _caption_path_for_image(image_path)
+    if caption_path is None:
         return None
     return _normalize_whitespace(caption_path.read_text(encoding="utf-8-sig"))
 
@@ -128,14 +153,110 @@ def _load_json(path: Path) -> Dict[str, Any]:
     return value
 
 
-def _build_entries_from_directory(dataset_dir: Path, warnings: List[str]) -> List[DatasetEntry]:
+def _role_from_directory(directory: Path, dataset_dir: Path) -> Optional[str]:
+    try:
+        relative_parts = directory.relative_to(dataset_dir).parts
+    except ValueError:
+        return None
+    for part in reversed(relative_parts):
+        normalized = part.strip().casefold()
+        if normalized == "result" or normalized.endswith("_result") or normalized.endswith("-result"):
+            return "result"
+        match = _CONTROL_ROLE_RE.search(normalized)
+        if match:
+            return f"control{match.group(1)}"
+    return None
+
+
+def _role_directories(dataset_dir: Path, allowed_roles: Optional[Sequence[str]] = None) -> Dict[str, Path]:
+    allowed = set(allowed_roles or _IMAGE_ROLES)
+    role_dirs: Dict[str, Path] = {}
+    for directory in sorted((path for path in dataset_dir.rglob("*") if path.is_dir()), key=lambda path: path.as_posix().lower()):
+        role = _role_from_directory(directory, dataset_dir)
+        if role in allowed and role not in role_dirs:
+            role_dirs[role] = directory
+    return role_dirs
+
+
+def _make_entry(
+    dataset_dir: Path,
+    record_id: str,
+    caption: str,
+    image_paths: Dict[str, Path],
+) -> DatasetEntry:
+    relative_paths = {
+        role: path.relative_to(dataset_dir).as_posix()
+        for role, path in sorted(image_paths.items())
+    }
+    primary_role = "result" if "result" in image_paths else next(iter(relative_paths), "")
+    primary_path = image_paths.get(primary_role)
+    return DatasetEntry(
+        record_id=record_id,
+        caption=caption,
+        image_path=primary_path,
+        relative_image_path=relative_paths.get(primary_role, ""),
+        image_paths=dict(sorted(image_paths.items())),
+        relative_image_paths=relative_paths,
+    )
+
+
+def _build_entries_from_multiview(
+    dataset_dir: Path,
+    role_dirs: Dict[str, Path],
+    warnings: List[str],
+    caption_role: str,
+) -> List[DatasetEntry]:
+    groups: Dict[str, Dict[str, Path]] = {}
+    for role, role_dir in role_dirs.items():
+        for image_path in sorted(
+            (path for path in role_dir.rglob("*") if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES),
+            key=lambda path: path.as_posix().lower(),
+        ):
+            group = groups.setdefault(image_path.stem, {})
+            if role in group:
+                warnings.append(f"Duplicate `{role}` image for sample `{image_path.stem}`; kept the first file.")
+                continue
+            group[role] = image_path
+
+    entries: List[DatasetEntry] = []
+    for record_id in sorted(groups, key=str.casefold):
+        image_paths = groups[record_id]
+        caption_image = image_paths.get(caption_role)
+        if caption_image is None:
+            warnings.append(f"Missing `{caption_role}` image for sample `{record_id}`; skipped.")
+            continue
+        caption = _caption_for_image(caption_image)
+        if not caption:
+            warnings.append(
+                f"Missing `{caption_role}` caption for sample `{caption_image.relative_to(dataset_dir).as_posix()}`; skipped."
+            )
+            continue
+        for role in ("control1", "control2", "control3"):
+            if role not in image_paths:
+                warnings.append(f"Missing `{role}` image for sample `{record_id}`; kept result sample.")
+        entries.append(_make_entry(dataset_dir, record_id, caption, image_paths))
+    return entries
+
+
+def _build_entries_from_directory(
+    dataset_dir: Path,
+    warnings: List[str],
+    configured_roles: Optional[Sequence[str]] = None,
+    caption_role: str = "result",
+) -> List[DatasetEntry]:
+    role_dirs = _role_directories(dataset_dir, configured_roles)
+    if role_dirs:
+        return _build_entries_from_multiview(dataset_dir, role_dirs, warnings, caption_role)
+
     image_dir = dataset_dir / "images"
     if not image_dir.is_dir():
-        raise DatasetError(f"[IAT] Dataset `{dataset_dir}` is missing the required `images` directory.")
+        raise DatasetError(
+            f"[IAT] Dataset `{dataset_dir}` is missing `images` or a recognized result directory."
+        )
     root = image_dir
     entries: List[DatasetEntry] = []
     for image_path in sorted(
-        (path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES),
+        (path for path in root.iterdir() if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES),
         key=lambda path: path.as_posix().lower(),
     ):
         caption = _caption_for_image(image_path)
@@ -143,14 +264,7 @@ def _build_entries_from_directory(dataset_dir: Path, warnings: List[str]) -> Lis
             warnings.append(f"Missing caption for image `{image_path.relative_to(dataset_dir).as_posix()}`; skipped.")
             continue
         relative = image_path.relative_to(dataset_dir).as_posix()
-        entries.append(
-            DatasetEntry(
-                record_id=Path(relative).with_suffix("").as_posix(),
-                caption=caption,
-                image_path=image_path,
-                relative_image_path=relative,
-            )
-        )
+        entries.append(_make_entry(dataset_dir, Path(relative).with_suffix("").as_posix(), caption, {"image": image_path}))
     return entries
 
 
@@ -172,9 +286,24 @@ def load_dataset_record(path: Path) -> DatasetRecord:
     if language not in {"zh", "en", "ja"}:
         raise DatasetError(f"[IAT] {source_path.name}: `language` must be one of zh, en, or ja.")
     trigger_words = _string_list(raw.get("trigger_words"), "trigger_words", source_path, required=True)
+    configured_roles = _string_list(raw.get("image_roles"), "image_roles", source_path, required=False)
+    if configured_roles:
+        configured_roles = [role.casefold() for role in configured_roles]
+        invalid_roles = [role for role in configured_roles if role not in _IMAGE_ROLES]
+        if invalid_roles:
+            raise DatasetError(
+                f"[IAT] {source_path.name}: `image_roles` contains unsupported roles: {', '.join(invalid_roles)}."
+            )
+        configured_roles = list(dict.fromkeys(configured_roles))
+    caption_role = raw.get("caption_role", "result")
+    if not isinstance(caption_role, str) or not caption_role.strip():
+        raise DatasetError(f"[IAT] {source_path.name}: `caption_role` must be a non-empty string when provided.")
+    caption_role = _normalize_whitespace(caption_role).casefold()
+    if caption_role not in _IMAGE_ROLES:
+        raise DatasetError(f"[IAT] {source_path.name}: `caption_role` must be one of {', '.join(_IMAGE_ROLES)}.")
 
     warnings: List[str] = []
-    entries = _build_entries_from_directory(path, warnings)
+    entries = _build_entries_from_directory(path, warnings, configured_roles or None, caption_role)
     if not entries:
         raise DatasetError(f"[IAT] Dataset `{dataset_name}` has no valid image/caption entries.")
 
@@ -185,6 +314,8 @@ def load_dataset_record(path: Path) -> DatasetRecord:
         "lora_name": lora_name,
         "language": language,
         "trigger_words": trigger_words,
+        "image_roles": configured_roles,
+        "caption_role": caption_role,
         "entry_count": len(entries),
         "source_path": str(source_path),
         "warnings": warnings,
@@ -256,10 +387,13 @@ def dataset_fingerprint(record: DatasetRecord) -> str:
     digest = hashlib.sha256()
     digest.update(record.source_path.read_bytes())
     dataset_dir = record.source_path.parent
-    image_dir = dataset_dir / "images"
     tracked_suffixes = _IMAGE_SUFFIXES | {".txt"}
     for path in sorted(
-        (item for item in image_dir.rglob("*") if item.is_file() and item.suffix.lower() in tracked_suffixes),
+        (
+            item
+            for item in dataset_dir.rglob("*")
+            if item.is_file() and item.suffix.lower() in tracked_suffixes and item != record.source_path
+        ),
         key=lambda item: item.as_posix().lower(),
     ):
         stat = path.stat()
@@ -290,6 +424,20 @@ def _normalize_scores(scores: Sequence[float]) -> List[float]:
     return [(value - low) / (high - low) for value in scores]
 
 
+def _mean_vector(vectors: Sequence[Optional[Sequence[float]]]) -> Optional[List[float]]:
+    usable = [list(vector) for vector in vectors if vector]
+    if not usable:
+        return None
+    dimension = len(usable[0])
+    if dimension == 0 or any(len(vector) != dimension for vector in usable):
+        return None
+    values = [sum(float(vector[index]) for vector in usable) / len(usable) for index in range(dimension)]
+    norm = math.sqrt(sum(value * value for value in values))
+    if norm < 1e-12:
+        return [0.0] * dimension
+    return [value / norm for value in values]
+
+
 class DatasetIndex:
     def __init__(
         self,
@@ -318,7 +466,7 @@ class DatasetIndex:
 
     @property
     def version(self) -> str:
-        return f"hybrid-v2:{self.fingerprint[:12]}"
+        return f"hybrid-v3:{self.fingerprint[:12]}"
 
     def _bm25_scores(self, query: str) -> List[float]:
         query_tokens = tokenize(query)
@@ -358,6 +506,7 @@ class DatasetIndex:
         self,
         query: str,
         reference_image: Any = None,
+        reference_images: Optional[Sequence[Any]] = None,
         preserve_reference_color: bool = False,
         top_k: int = 4,
         candidate_k: int = 16,
@@ -365,6 +514,9 @@ class DatasetIndex:
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         top_k = max(1, min(8, int(top_k)))
         candidate_k = max(top_k, min(16, int(candidate_k)))
+        references = list(reference_images or [])
+        if reference_image is not None:
+            references.insert(0, reference_image)
         bm25 = self._bm25_scores(query)
         text_query = (
             _encode_text(self.embedding_model_path, query, device=self.embedding_device)
@@ -372,19 +524,30 @@ class DatasetIndex:
             else None
         )
         image_query = None
-        if reference_image is not None and self.embedding_model_path:
-            image_query = _encode_image(
-                self.embedding_model_path,
-                reference_image,
-                grayscale=not preserve_reference_color,
-                device=self.embedding_device,
-            )
+        if references and self.embedding_model_path:
+            if len(references) == 1:
+                image_query = _encode_image(
+                    self.embedding_model_path,
+                    references[0],
+                    grayscale=not preserve_reference_color,
+                    device=self.embedding_device,
+                )
+            else:
+                image_query = _mean_vector(
+                    _encode_image_batch(
+                        self.embedding_model_path,
+                        references,
+                        self.embedding_device,
+                        min(16, len(references)),
+                        grayscale=not preserve_reference_color,
+                    )
+                )
 
         text_scores = [_cosine(text_query, vector) for vector in self.text_embeddings] if text_query else [0.0] * len(self.record.entries)
         image_vectors = self.image_embeddings if preserve_reference_color else self.gray_embeddings
         image_scores = [_cosine(image_query, vector) for vector in image_vectors] if image_query else [0.0] * len(self.record.entries)
 
-        if reference_image is not None and self.embedding_model_path:
+        if references and self.embedding_model_path:
             weights = {"image": 0.45, "text": 0.35, "bm25": 0.20}
         elif self.embedding_model_path:
             weights = {"image": 0.0, "text": 0.65, "bm25": 0.35}
@@ -433,6 +596,8 @@ class DatasetIndex:
                     "record_id": entry.record_id,
                     "caption": entry.caption,
                     "image_path": entry.relative_image_path,
+                    "image_paths": entry.grouped_relative_image_paths(),
+                    "image_roles": list(entry.grouped_relative_image_paths()),
                     "score": round(float(combined[idx]), 6),
                     "components": {
                         "bm25": round(float(normalized_bm25[idx]), 6),
@@ -445,7 +610,8 @@ class DatasetIndex:
             "index_version": self.version,
             "embedding_model_path": self.embedding_model_path,
             "embedding_device": self.embedding_device,
-            "reference_image_used": reference_image is not None,
+            "reference_image_used": bool(references),
+            "reference_image_count": len(references),
             "reference_color_preserved": bool(preserve_reference_color),
             "weights": weights,
             "candidate_k": candidate_k,
@@ -593,7 +759,7 @@ def _encode_image_batch(
 
 def _serialize_index(index: DatasetIndex) -> Dict[str, Any]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "fingerprint": index.fingerprint,
         "embedding_model_path": index.embedding_model_path,
         "text_embeddings": index.text_embeddings,
@@ -604,6 +770,7 @@ def _serialize_index(index: DatasetIndex) -> Dict[str, Any]:
                 "record_id": entry.record_id,
                 "caption": entry.caption,
                 "image_path": entry.relative_image_path,
+                "image_paths": entry.grouped_relative_image_paths(),
             }
             for entry in index.record.entries
         ],
@@ -617,13 +784,17 @@ def _deserialize_index(
     embedding_model_path: str,
     embedding_device: str,
 ) -> Optional[DatasetIndex]:
-    if payload.get("schema_version") != 2 or payload.get("fingerprint") != fingerprint:
+    if payload.get("schema_version") != 3 or payload.get("fingerprint") != fingerprint:
         return None
     entries = payload.get("entries")
     if not isinstance(entries, list) or len(entries) != len(record.entries):
         return None
     for expected, cached in zip(record.entries, entries):
-        if expected.record_id != cached.get("record_id") or expected.caption != cached.get("caption"):
+        if (
+            expected.record_id != cached.get("record_id")
+            or expected.caption != cached.get("caption")
+            or expected.grouped_relative_image_paths() != (cached.get("image_paths") or {})
+        ):
             return None
     cached_model_path = str(payload.get("embedding_model_path") or "")
     if cached_model_path != str(embedding_model_path or ""):
@@ -685,20 +856,30 @@ def get_dataset_index(
         )
         from PIL import Image
 
-        image_positions: List[int] = []
         images: List[Any] = []
+        image_counts: List[int] = []
         image_embeddings = [None] * len(record.entries)
         gray_embeddings = [None] * len(record.entries)
         for idx, entry in enumerate(record.entries):
-            if entry.image_path:
-                with Image.open(entry.image_path) as image:
+            entry_images = entry.grouped_image_paths()
+            if not entry_images:
+                image_counts.append(0)
+                continue
+            count = 0
+            for image_path in entry_images.values():
+                with Image.open(image_path) as image:
                     images.append(image.convert("RGB").copy())
-                image_positions.append(idx)
+                count += 1
+            image_counts.append(count)
         rgb_vectors = _encode_image_batch(embedding_model_path, images, resolved_device, batch_size, grayscale=False)
         gray_vectors = _encode_image_batch(embedding_model_path, images, resolved_device, batch_size, grayscale=True)
-        for idx, rgb_vector, gray_vector in zip(image_positions, rgb_vectors, gray_vectors):
-            image_embeddings[idx] = rgb_vector
-            gray_embeddings[idx] = gray_vector
+        offset = 0
+        for idx, count in enumerate(image_counts):
+            if not count:
+                continue
+            image_embeddings[idx] = _mean_vector(rgb_vectors[offset : offset + count])
+            gray_embeddings[idx] = _mean_vector(gray_vectors[offset : offset + count])
+            offset += count
     else:
         warnings.append("Embedding model path is empty; using offline BM25 only.")
 

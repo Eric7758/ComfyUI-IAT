@@ -209,12 +209,17 @@ reference image is optional and can be used for structure-aware retrieval.
 | top_k | Int | 4 | Final MMR-selected captions, 1-8 |
 | preserve_reference_color | Boolean | False | Use RGB instead of grayscale reference image |
 | custom_instruction | String | "" | Extra generation instruction |
-| image | IMAGE | optional | Structure/style reference |
+| image | IMAGE | optional | Reference image 1 |
+| image_2 | IMAGE | optional | Reference image 2 |
+| image_3 | IMAGE | optional | Reference image 3 |
+| image_4 | IMAGE | optional | Reference image 4 |
 
 ### Notes
 
 - `Dataset Caption Picker` does not load a model and uses `random.Random(seed)` for reproducible sampling.
 - `Dataset RAG Prompt Generator` combines Chinese BM25/character n-gram retrieval with an optional local Chinese CLIP index.
+- Multi-view datasets group the same filename stem across `control1`, `control2`, `control3`, and `result`; one `result/<stem>.txt` caption represents the group.
+- The generator accepts up to four reference images. A batched IMAGE input is expanded into individual images and sent together to the selected backend.
 - The index cache is automatically rebuilt when `dataset.json`, image files, or captions change.
 - Local generation reuses the existing Transformers cache. Ollama uses native `/api/chat`; vLLM uses `/v1/chat/completions`.
 - The default configuration is fully offline and points at local Ollama `qwen3.5:122b`.

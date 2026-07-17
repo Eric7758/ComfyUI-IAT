@@ -4,7 +4,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from PIL import Image
 
@@ -107,25 +107,42 @@ def _dataset_options() -> List[str]:
     return options
 
 
-def _tensor_to_pil(image: Any) -> Optional[Image.Image]:
+def _tensor_to_pil_list(image: Any) -> List[Image.Image]:
     if image is None:
-        return None
+        return []
     try:
-        if image.dim() == 4:
-            image = image[0]
-        array = (image.cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
-        return Image.fromarray(array).convert("RGB")
+        dimensions = image.dim()
+        if dimensions == 3:
+            image = image.unsqueeze(0)
+        elif dimensions != 4:
+            raise ValueError(f"expected IMAGE tensor with 3 or 4 dimensions, got {dimensions}")
+        return [
+            Image.fromarray((item.cpu().numpy() * 255.0).clip(0, 255).astype("uint8")).convert("RGB")
+            for item in image
+        ]
     except Exception as exc:
         raise DatasetError(f"[IAT] Could not convert IMAGE input to PIL: {exc}") from exc
 
 
-def _generation_images(image: Optional[Image.Image], preserve_color: bool) -> Optional[List[Image.Image]]:
-    if image is None:
+def _generation_images(images: Sequence[Image.Image], preserve_color: bool) -> Optional[List[Image.Image]]:
+    if not images:
         return None
-    prepared = image.convert("RGB")
-    if not preserve_color:
-        prepared = prepared.convert("L").convert("RGB")
-    return [prepared]
+    prepared = []
+    for image in images:
+        current = image.convert("RGB")
+        if not preserve_color:
+            current = current.convert("L").convert("RGB")
+        prepared.append(current)
+    return prepared
+
+
+def _collect_reference_images(*inputs: Any) -> List[Image.Image]:
+    images: List[Image.Image] = []
+    for value in inputs:
+        images.extend(_tensor_to_pil_list(value))
+    if len(images) > 4:
+        raise DatasetError("[IAT] At most 4 reference images are supported (image through image_4).")
+    return images
 
 
 def _sanitize_prompt(text: str) -> str:
@@ -251,6 +268,8 @@ class DatasetCaptionPickerNode:
         metadata = dataset_metadata(record)
         metadata["selected_record_id"] = entry.record_id
         metadata["selected_image_path"] = entry.relative_image_path
+        metadata["selected_image_paths"] = entry.grouped_relative_image_paths()
+        metadata["selected_image_roles"] = list(entry.grouped_relative_image_paths())
         return (
             entry.caption,
             selected_index,
@@ -283,6 +302,9 @@ class DatasetRAGPromptGeneratorNode:
             },
             "optional": {
                 "image": ("IMAGE",),
+                "image_2": ("IMAGE",),
+                "image_3": ("IMAGE",),
+                "image_4": ("IMAGE",),
             },
         }
 
@@ -313,6 +335,9 @@ class DatasetRAGPromptGeneratorNode:
         repetition_penalty,
         timeout_seconds,
         image=None,
+        image_2=None,
+        image_3=None,
+        image_4=None,
     ):
         if not (user_prompt or "").strip():
             raise RuntimeError("[IAT] user_prompt is required.")
@@ -320,7 +345,7 @@ class DatasetRAGPromptGeneratorNode:
         record = _selected_record(dataset_name)
 
         try:
-            reference_image = _tensor_to_pil(image)
+            reference_images = _collect_reference_images(image, image_2, image_3, image_4)
             index = get_dataset_index(
                 record,
                 _index_cache_root(),
@@ -331,7 +356,7 @@ class DatasetRAGPromptGeneratorNode:
             )
             retrieved, debug = index.retrieve(
                 (user_prompt or "").strip(),
-                reference_image=reference_image,
+                reference_images=reference_images,
                 preserve_reference_color=bool(preserve_reference_color),
                 top_k=top_k,
                 seed=retrieval_seed,
@@ -357,7 +382,7 @@ class DatasetRAGPromptGeneratorNode:
                 model=model,
                 base_url=base_url,
                 prompt=generation_prompt,
-                images=_generation_images(reference_image, bool(preserve_reference_color)),
+                images=_generation_images(reference_images, bool(preserve_reference_color)),
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
