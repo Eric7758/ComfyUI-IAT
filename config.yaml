@@ -2,11 +2,38 @@ model:
   default_variant: "Qwen3.5-2B"
   device: "cuda"  # cuda / cpu
 
+datasets:
+  # External dataset root. Each dataset directory must contain dataset.json and
+  # images/<stem>.png + images/<stem>.txt pairs.
+  root: "../IAT-datasets"
+  # Point to an already-downloaded local Chinese CLIP directory. Runtime never
+  # downloads this model. Set empty only when BM25-only retrieval is intentional.
+  embedding_model_path: ""
+  embedding_device: "cpu"  # cpu / cuda / auto
+  embedding_batch_size: 16
+  index_cache_dir: ""
+
+llm:
+  default_backend: "Ollama"  # Ollama / vLLM / Local
+  default_model: "qwen3.5:122b"
+  timeout_seconds: 300
+
+ollama:
+  base_url: "http://127.0.0.1:11434"
+  model: "qwen3.5:122b"
+  keep_alive: -1
+  think: false
+
+vllm:
+  base_url: "http://127.0.0.1:8000/v1"
+  model: "qwen3.5:122b"
+  api_key: ""
+
 runtime:
   default_attention_backend: "SDPA"  # SDPA / FlashAttention-2 / Eager
   prefer_optimized_attention: true  # Try FlashAttention2/SDPA first, fall back automatically if unsupported
   enable_torch_compile: false  # Conservative default; enable only if your torch/cuda stack is stable
-  offline_only: false  # When true, never download; only use local model files and fail fast on local load errors
+  offline_only: true  # Fully offline default: never download; only use local model files
 
 openai:
   base_url: "https://api.psydo.top/v1"

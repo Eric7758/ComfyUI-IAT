@@ -3,7 +3,7 @@
 > 中文速览（精简版）
 >
 > - 节点分类不变：`IAT/Qwen3.5`、`IAT/Vision API`、`IAT/Image`、`IAT/Input`。
-> - 本次整理仅做文件与说明精简，不改节点输入输出与执行逻辑。
+> - Dataset 功能已拆分为 `Dataset Caption Picker` 与 `Dataset RAG Prompt Generator`。
 > - 反推接口优先级：节点输入 > `config.yaml` 对应 provider > 环境变量。
 > - 文本与视觉节点仅支持官方原版 `model_variant`。
 > - 模型下载目录固定为 `ComfyUI/models/diffusion_models`。
@@ -16,7 +16,7 @@
 - [Model Variants](#model-variants)
 - [Qwen3.5 Prompt Enhancer](#qwen35-prompt-enhancer)
 - [Qwen3.5 Reverse Prompt](#qwen35-reverse-prompt)
-- [Qwen3.5 Dataset RAG Reverse Prompt](#qwen35-dataset-rag-reverse-prompt)
+- [Dataset Nodes](#dataset-nodes)
 - [Vision API Reverse Prompt](#vision-api-reverse-prompt)
 - [Qwen Translator](#qwen-translator)
 - [Qwen Kontext Translator](#qwen-kontext-translator)
@@ -25,13 +25,14 @@
 
 ## Node Overview
 
-ComfyUI-IAT provides 6 nodes for text and image processing:
+ComfyUI-IAT provides 9 nodes for text and image processing:
 
 | Node | Category | Purpose |
 |------|----------|---------|
 | Qwen3.5 Prompt Enhancer | IAT/Qwen3.5 | Enhance and optimize text prompts |
 | Qwen3.5 Reverse Prompt | IAT/Qwen3.5 | Generate prompts from images |
-| Qwen3.5 Dataset RAG Reverse Prompt | IAT/Qwen3.5 | Generate prompts in a selected dataset caption style |
+| Dataset Caption Picker | IAT/Dataset | Deterministically select one original training caption |
+| Dataset RAG Prompt Generator | IAT/Dataset | Retrieve paired training examples and generate one prompt |
 | Vision API Reverse Prompt | IAT/Vision API | Generate prompts from images via OpenAI-compatible APIs, Gemini, and Qwen-compatible providers |
 | Qwen Translator | IAT/Qwen3.5 | Translate text to English |
 | Qwen Kontext Translator | IAT/Qwen3.5 | Optimize editing instructions |
@@ -188,45 +189,49 @@ Generate text prompts from input images using vision-language models.
             [CLIP Text Encode] → [KSampler] → [Save Image]
 ```
 
-## Qwen3.5 Dataset RAG Reverse Prompt
+## Dataset Nodes
 
 ### Purpose
-Generate a new prompt from one input image while matching the caption style of a selected local dataset knowledge base.
+Use the two Dataset nodes with an external offline dataset. Text is required;
+reference image is optional and can be used for structure-aware retrieval.
 
 ### Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| model_variant | Dropdown | Official model list | Select official VL variant |
-| device | Dropdown | cuda | Computing device |
-| attention_backend | Dropdown | SDPA | Attention implementation |
-| dataset_name | Dropdown | First dataset JSON | Select one local prompt KB |
-| language | Dropdown | Auto | Output language |
-| few_shot_count | Int | 6 | Number of retrieved captions used as few-shot examples |
-| include_trigger_words | Boolean | True | Include dataset trigger words in generation context |
+| user_prompt | String | required | User requirements and hard constraints |
+| dataset_name | Dropdown | first dataset | Dataset directory under `datasets.root` |
+| backend | Dropdown | Ollama | `Ollama`, `vLLM`, or in-process `Local` |
+| model_override | String | config default | Backend-specific model name |
+| base_url_override | String | config default | Backend endpoint override |
+| retrieval_seed | Int | 1 | Reproducible retrieval tie-breaker |
+| generation_seed | Int | 1 | Backend generation seed |
+| top_k | Int | 4 | Final MMR-selected captions, 1-8 |
+| preserve_reference_color | Boolean | False | Use RGB instead of grayscale reference image |
 | custom_instruction | String | "" | Extra generation instruction |
-| max_tokens | Int | 256 | Maximum output length |
-| temperature | Float | 0.1 | Creativity (0.0-1.5) |
-| top_p | Float | 0.9 | Nucleus sampling |
-| repetition_penalty | Float | 1.05 | Repetition penalty |
-| keep_model_loaded | Boolean | True | Keep model in memory |
-| seed | Int | 1 | Random seed |
-| image | IMAGE | required | Source image |
+| image | IMAGE | optional | Structure/style reference |
 
 ### Notes
 
-- The node uses a two-stage flow: visual retrieval description first, final dataset-style prompt generation second.
-- In `Dataset RAG` mode, the input image is treated as an achromatic structure reference by default, so color/material proposals come from the dataset style rather than the source image palette.
-- Dataset JSON files are loaded from `datasets/prompts_kb/`.
-- Adding or editing dataset JSON files requires a ComfyUI restart to refresh the `dataset_name` dropdown.
-- Only one dataset is used per run; retrieval happens only inside that dataset's `captions`.
+- `Dataset Caption Picker` does not load a model and uses `random.Random(seed)` for reproducible sampling.
+- `Dataset RAG Prompt Generator` combines Chinese BM25/character n-gram retrieval with an optional local Chinese CLIP index.
+- The index cache is automatically rebuilt when `dataset.json`, image files, or captions change.
+- Local generation reuses the existing Transformers cache. Ollama uses native `/api/chat`; vLLM uses `/v1/chat/completions`.
+- The default configuration is fully offline and points at local Ollama `qwen3.5:122b`.
+- The node returns the final prompt, retrieved captions, retrieval scores/debug JSON, and dataset metadata.
 
 ### Example Workflow
 
 ```
-[Load Image] → [Qwen3.5 Dataset RAG Reverse Prompt] → [Show Text]
-                            ↓
-                    [CLIP Text Encode] → [KSampler] → [Save Image]
+[Text Input] + [Load Image optional] → [Dataset RAG Prompt Generator]
+                                      ↓
+                              [CLIP Text Encode] → [KSampler] → [Save Image]
+```
+
+For direct caption inspection:
+
+```text
+[Dataset Caption Picker] → [Show Text]
 ```
 
 ## Vision API Reverse Prompt

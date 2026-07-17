@@ -1,300 +1,397 @@
 from __future__ import annotations
 
+import json
+import re
 import sys
 from pathlib import Path
-import re
+from typing import Any, Dict, List, Optional
 
 from PIL import Image
 
-from .prompt_kb import (
-    discover_prompt_kb_records,
-    get_prompt_kb_dataset_options,
-    resolve_output_language,
-    select_palette_reference_captions,
-    select_caption_by_seed,
-    retrieve_top_captions,
+from .dataset_repository import (
+    DatasetError,
+    EmbeddingModelUnavailable,
+    DatasetRecord,
+    choose_caption,
+    dataset_fingerprint,
+    dataset_metadata,
+    discover_datasets,
+    get_dataset_index,
 )
-from .qwen35_runtime import (
-    ATTENTION_OPTIONS,
-    DEFAULT_ATTENTION_BACKEND,
-    DEVICE_OPTIONS,
-    VL_MODEL_CANDIDATES,
-    VL_MODEL_LABEL_TO_VARIANT,
-    VL_MODEL_OPTIONS_GROUPED,
-    generate_vision_text,
-    unload_all_models,
-)
-
+from .llm_backends import BackendError, generate_with_backend
 _CFG = getattr(sys.modules.get("comfyui_iat_config"), "data", {}) or {}
+_CFG_PATH = Path(getattr(sys.modules.get("comfyui_iat_config"), "path", Path(__file__).resolve().parents[2] / "config.yaml"))
 _MODEL_CFG = (_CFG.get("model") or {}) if isinstance(_CFG, dict) else {}
-_DEFAULT_VARIANT = _MODEL_CFG.get("default_variant", "Qwen3.5-2B")
-_DEFAULT_DEVICE = _MODEL_CFG.get("device", "cuda")
-_LANGUAGE_OPTIONS = ["Auto", "English", "中文"]
-_GENERATION_MODE_OPTIONS = ["Dataset RAG", "Direct Caption"]
-_KB_ROOT = Path(__file__).resolve().parents[2] / "datasets" / "prompts_kb"
+_DATASET_CFG = (_CFG.get("datasets") or {}) if isinstance(_CFG, dict) else {}
+_LLM_CFG = (_CFG.get("llm") or {}) if isinstance(_CFG, dict) else {}
+_OLLAMA_CFG = (_CFG.get("ollama") or {}) if isinstance(_CFG, dict) else {}
+_VLLM_CFG = (_CFG.get("vllm") or {}) if isinstance(_CFG, dict) else {}
 
-DATASET_KB_RECORDS, DATASET_KB_ERRORS = discover_prompt_kb_records(_KB_ROOT)
+_BACKEND_OPTIONS = ["Ollama", "vLLM", "Local"]
+_SELECTION_OPTIONS = ["Random", "Sequential", "By Index"]
+_LANGUAGE_OPTIONS = ["Auto", "中文", "English"]
+_LOCAL_MODEL_OPTIONS = [
+    "Qwen3.5-0.8B",
+    "Qwen3.5-2B",
+    "Qwen3.5-4B",
+    "Qwen3.5-9B",
+    "Qwen3.5-27B",
+    "Qwen3.6-35B-A3B",
+]
+_ATTENTION_OPTIONS = ["SDPA", "FlashAttention-2", "Eager"]
+_DEFAULT_ATTENTION_BACKEND = str((_CFG.get("runtime") or {}).get("default_attention_backend") or "SDPA")
+if _DEFAULT_ATTENTION_BACKEND not in _ATTENTION_OPTIONS:
+    _DEFAULT_ATTENTION_BACKEND = "SDPA"
+_DATASET_ROOT = str(_DATASET_CFG.get("root") or "").strip()
+_EMBEDDING_MODEL_PATH = str(_DATASET_CFG.get("embedding_model_path") or "").strip()
+_INDEX_CACHE_DIR = str(_DATASET_CFG.get("index_cache_dir") or "").strip()
+_EMBEDDING_DEVICE = str(_DATASET_CFG.get("embedding_device") or "cpu").strip()
+_EMBEDDING_BATCH_SIZE = int(_DATASET_CFG.get("embedding_batch_size") or 16)
+_DEFAULT_BACKEND = str(_LLM_CFG.get("default_backend") or "Ollama")
+if _DEFAULT_BACKEND not in _BACKEND_OPTIONS:
+    _DEFAULT_BACKEND = "Ollama"
 
 
-def _tensor_to_pil_list(image):
+def _resolve_config_path(value: str, fallback: Path) -> Path:
+    if not value:
+        return fallback
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = (_CFG_PATH.parent / path).resolve()
+    return path
+
+
+def _dataset_root() -> Path:
+    return _resolve_config_path(_DATASET_ROOT, _CFG_PATH.parent / "datasets")
+
+
+def _index_cache_root() -> Path:
+    if _INDEX_CACHE_DIR:
+        return _resolve_config_path(_INDEX_CACHE_DIR, _dataset_root() / ".iat_index")
+    return _dataset_root() / ".iat_index"
+
+
+def _embedding_model_path() -> str:
+    if not _EMBEDDING_MODEL_PATH:
+        return ""
+    return str(_resolve_config_path(_EMBEDDING_MODEL_PATH, _CFG_PATH.parent / "models" / "embeddings"))
+
+
+def _discover() -> tuple[Dict[str, DatasetRecord], List[str]]:
+    return discover_datasets(_dataset_root())
+
+
+def _selected_record(dataset_name: str) -> DatasetRecord:
+    records, errors = _discover()
+    record = records.get(dataset_name)
+    if record is not None:
+        return record
+    details = f"\nDiscovery diagnostics:\n" + "\n".join(errors) if errors else ""
+    raise DatasetError(
+        f"[IAT] Dataset `{dataset_name}` was not found or is invalid under `{_dataset_root()}`.{details}"
+    )
+
+
+def _dataset_change_token(dataset_name: str) -> str:
+    try:
+        return dataset_fingerprint(_selected_record(dataset_name))
+    except DatasetError as exc:
+        return f"invalid:{dataset_name}:{exc}"
+
+
+def _dataset_options() -> List[str]:
+    records, errors = _discover()
+    options = sorted(records.keys())
+    if not options:
+        return ["__NO_DATASET_FOUND__"]
+    return options
+
+
+def _tensor_to_pil(image: Any) -> Optional[Image.Image]:
     if image is None:
-        return []
-    if image.dim() == 3:
-        image = image.unsqueeze(0)
-
-    pil_images = []
-    for idx in range(image.shape[0]):
-        array = (image[idx].cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
-        pil_images.append(Image.fromarray(array))
-    return pil_images
-
-
-def _to_vl_variant(selection: str) -> str:
-    return VL_MODEL_LABEL_TO_VARIANT.get(selection, selection)
+        return None
+    try:
+        if image.dim() == 4:
+            image = image[0]
+        array = (image.cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
+        return Image.fromarray(array).convert("RGB")
+    except Exception as exc:
+        raise DatasetError(f"[IAT] Could not convert IMAGE input to PIL: {exc}") from exc
 
 
-def _to_achromatic_reference(images):
-    achromatic_images = []
-    for image in images:
-        if image.mode != "RGB":
-            image = image.convert("RGB")
-        gray = image.convert("L").convert("RGB")
-        achromatic_images.append(gray)
-    return achromatic_images
+def _generation_images(image: Optional[Image.Image], preserve_color: bool) -> Optional[List[Image.Image]]:
+    if image is None:
+        return None
+    prepared = image.convert("RGB")
+    if not preserve_color:
+        prepared = prepared.convert("L").convert("RGB")
+    return [prepared]
 
 
-def _build_retrieval_prompt(language: str) -> str:
-    if language == "zh":
-        return (
-            "请只输出一段用于检索训练集标注样本的中性视觉描述。"
-            "聚焦主体、分件关系、结构、体量、视角、构图、场景与风格关键词。"
-            "忽略原图色彩，不要根据原图颜色做描述。"
-            "不要写解释、不要分点、不要加入训练集触发词。"
-        )
-    return (
-        "Output one neutral visual retrieval description only. "
-        "Focus on subject, part breakdown, structure, massing, view, composition, scene, and style keywords. "
-        "Ignore the source image colors. Do not describe its existing color palette. "
-        "Do not explain. Do not add dataset trigger words."
-    )
-
-
-def _sanitize_output_prompt(text: str) -> str:
+def _sanitize_prompt(text: str) -> str:
     cleaned = (text or "").strip()
-    cleaned = re.sub(r"\s*\[cite:\s*\d+\s*\]", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*\[\s*\d+\s*\]\s*$", "", cleaned)
-    cleaned = re.sub(r"^(?:最终提示词|提示词|Prompt)\s*[:：]\s*", "", cleaned, flags=re.IGNORECASE)
-    return cleaned.strip()
+    cleaned = re.sub(r"\s*\[(?:cite\s*:\s*\d+|\d+)\]\s*$", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^(?:最终提示词|提示词|Prompt|Final prompt)\s*[:：]\s*", "", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def _build_generation_prompt(
+def _contains_trigger(prompt: str, trigger: str) -> bool:
+    normalized_prompt = prompt.casefold()
+    normalized_trigger = trigger.strip().casefold()
+    if not normalized_trigger:
+        return True
+    if re.search(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", normalized_trigger):
+        return normalized_trigger in normalized_prompt
+    return re.search(rf"(?<!\w){re.escape(normalized_trigger)}(?!\w)", normalized_prompt) is not None
+
+
+def _ensure_trigger_words(prompt: str, record: DatasetRecord) -> str:
+    result = _sanitize_prompt(prompt)
+    missing = [word for word in record.trigger_words if not _contains_trigger(result, word)]
+    if missing:
+        result = ", ".join(missing + ([result] if result else []))
+    return result
+
+
+def _output_language(record: DatasetRecord, selection: str) -> str:
+    if selection == "中文":
+        return "zh"
+    if selection == "English":
+        return "en"
+    return record.language
+
+
+def _backend_defaults(backend: str) -> Dict[str, Any]:
+    if backend == "Ollama":
+        return {
+            "model": str(_OLLAMA_CFG.get("model") or _LLM_CFG.get("default_model") or "qwen3.5:122b"),
+            "base_url": str(_OLLAMA_CFG.get("base_url") or "http://127.0.0.1:11434"),
+        }
+    if backend == "vLLM":
+        return {
+            "model": str(_VLLM_CFG.get("model") or _LLM_CFG.get("default_model") or "qwen3.5:122b"),
+            "base_url": str(_VLLM_CFG.get("base_url") or "http://127.0.0.1:8000/v1"),
+        }
+    default_variant = str(_MODEL_CFG.get("default_variant") or "Qwen3.5-2B")
+    if default_variant not in _LOCAL_MODEL_OPTIONS:
+        default_variant = "Qwen3.5-2B"
+    return {"model": default_variant, "base_url": ""}
+
+
+def _build_generation_instruction(
     *,
-    record,
+    record: DatasetRecord,
+    user_prompt: str,
+    retrieved: List[Dict[str, Any]],
     language: str,
-    include_trigger_words: bool,
     custom_instruction: str,
-    palette_captions,
-    top_captions,
+    preserve_reference_color: bool,
 ) -> str:
-    trigger_text = ", ".join(record.trigger_words) if include_trigger_words else "(disabled)"
-    palette_block = "\n".join(f"P{idx + 1}. {caption}" for idx, caption in enumerate(palette_captions))
-    caption_block = "\n".join(f"{idx + 1}. {caption}" for idx, caption in enumerate(top_captions))
+    examples = "\n".join(f"{item['rank']}. {item['caption']}" for item in retrieved)
+    trigger_words = ", ".join(record.trigger_words) or "(none declared)"
     if language == "zh":
         return (
-            "你是 LoRA 训练集提示词迁移工程师。"
-            "任务：基于输入图像的主体、结构、构图和使用场景，生成一条全新的正向生成提示词，"
-            "并严格贴合指定数据集的标注风格。\n\n"
-            f"数据集名称：{record.dataset_name}\n"
-            f"数据集版本：{record.version}\n"
-            f"触发词：{trigger_text}\n"
-            "色彩/材质参考原则：优先采用下方“CMF参考样本”里的配色、材质、纹理和饰件组合，不要默认回到黑灰色系。\n"
-            "要求：\n"
-            "1. 只输出一条最终提示词，不要解释。\n"
-            "2. 学习 few-shot 样本的词序、术语密度、标签语法、段落节奏和风格描述方式。\n"
-            "3. 保持整体格式和句式组织方式稳定，但必须改写其中具体的色彩、材质、纹理、饰件与氛围描述。\n"
-            "3.1 如果 few-shot 样本呈现出固定句式骨架或分号分隔格式，优先继承这种格式骨架，但把具体 CMF 内容重写为新的方案。\n"
-            "4. 不要把结果写成“为这张图”“将其改为”这类编辑指令，要直接输出可用于生成的新 prompt。\n"
-            "5. 输入图仅用于提供造型、分件、比例、构图和使用场景参考；不要继承原图颜色方案。\n"
-            "6. 色彩组合、材质搭配、纹理方向和饰件细节优先从数据集样本风格中提炼，并重新组合出新的 CMF 方案。\n"
-            "7. 不要复述输入图已有的 CMF 细节；若用户要求新风格、新颜色或新材质，必须生成与输入图不同的颜色、材质、拼色关系、纹理和饰件描述。\n"
-            "8. 当数据集中存在更鲜明的拼色、撞色或亮色样本时，优先从这些样本提炼色彩组合，而不是退回保守的黑灰棕默认答案。\n"
-            "9. 可以参考输入图的主体类别与构图，但视觉风格、CMF 和气质可以整体重设计，重点是探索更符合数据集风格的新描述。\n"
-            "10. 如果输入图是内饰/产品/界面等设计图，优先输出适合该对象的可落地 CMF 方案，而不是对原图做高相似复述。\n"
-            "11. 输出语言使用中文，除非样本中的英文术语更自然。\n"
-            "12. 不要输出负向提示词、引用标记、脚注、[cite: n]、LoRA 权重。\n"
-            f"13. 额外指令：{custom_instruction or '无'}\n\n"
-            "CMF参考样本：\n"
-            f"{palette_block}\n\n"
-            "Few-shot 样本：\n"
-            f"{caption_block}"
+            "你是 Flux.2 Klein 9B LoRA 训练集提示词工程师。请只输出一条可以直接用于生图的正向提示词，不要解释。\n\n"
+            f"用户要求（硬约束，必须满足）：{user_prompt}\n"
+            f"数据集：{record.dataset_name} v{record.version}\n"
+            f"基础模型：{record.base_model or 'Flux.2 Klein 9B'}\n"
+            f"LoRA 元数据（只用于提示词触发词，不要生成 LoRA 权重语法）：{record.lora_name or '(未声明)'}\n"
+            f"必须包含的触发词：{trigger_words}\n"
+            "数据集样本是软约束：学习其词序、术语、描述密度、标注格式、材质表达和视觉训练分布，但不要照抄任何样本。"
+            "用户明确指定的主体、数量、动作、构图、颜色、材质和风格要求优先于数据集偏好。"
+            f"参考图颜色策略：{'可以使用参考图颜色' if preserve_reference_color else '只参考主体、结构、比例、视角和构图，不继承参考图颜色与材质'}。\n"
+            "要求：保持用户硬约束；生成一条完整的新提示词；自动包含所有触发词；不要输出负面提示词、脚注、引用、编辑指令或 LoRA 权重；不要复述说明文字。\n"
+            f"额外指令：{custom_instruction or '无'}\n\n"
+            f"检索到的训练样本：\n{examples}"
         )
     return (
-        "You are a prompt engineer for LoRA training-style prompt transfer. "
-        "Generate one brand-new positive generation prompt from the input image semantics while matching the dataset annotation style.\n\n"
-        f"Dataset: {record.dataset_name}\n"
-        f"Version: {record.version}\n"
-        f"Trigger words: {trigger_text}\n"
-        "Color/material rule: prefer the color combinations, material pairings, textures, and trim cues from the CMF reference samples below instead of defaulting back to generic dark off-road palettes.\n"
-        "Requirements:\n"
-        "1. Output one final prompt only.\n"
-        "2. Mimic the few-shot examples' wording order, term density, label grammar, structural rhythm, and style description patterns.\n"
-        "3. Keep the overall format and sentence organization stable, but change the concrete colors, materials, textures, trim details, and mood descriptors.\n"
-        "3.1 If the few-shot examples use a stable sentence template or semicolon-separated format, keep that structural skeleton while rewriting the actual CMF content.\n"
-        "4. Do not write an editing instruction such as 'redesign this image' or 'for this image'; output a ready-to-use generation prompt directly.\n"
-        "5. Use the input image only as a reference for form, part breakdown, proportions, composition, and use case; do not inherit its source color palette.\n"
-        "6. Derive color combinations, material pairings, texture directions, and trim accents from the dataset style and recombine them into a new CMF proposal.\n"
-        "7. If the user asks for a new style, new colors, or new materials, you must replace the source image CMF with different color stories, material pairings, texture treatments, and trim details.\n"
-        "8. When the dataset contains brighter, contrasting, or more distinctive colorways, prefer those combinations over conservative black/gray/brown defaults.\n"
-        "9. For interior, product, or interface design inputs, prioritize a plausible new CMF proposal instead of a high-similarity restatement of the source image.\n"
-        "10. Do not copy any example verbatim.\n"
-        "11. Output in English.\n"
-        "12. Do not include negative prompt text, citations, footnotes, [cite: n], or LoRA weights.\n"
-        f"13. Extra instruction: {custom_instruction or 'none'}\n\n"
-        "CMF reference samples:\n"
-        f"{palette_block}\n\n"
-        "Few-shot examples:\n"
-        f"{caption_block}"
+        "You are a Flux.2 Klein 9B LoRA training-caption prompt engineer. Output exactly one ready-to-use positive image prompt and nothing else.\n\n"
+        f"User requirements (hard constraints): {user_prompt}\n"
+        f"Dataset: {record.dataset_name} v{record.version}\n"
+        f"Base model: {record.base_model or 'Flux.2 Klein 9B'}\n"
+        f"LoRA metadata: {record.lora_name or '(not declared)'}\n"
+        f"Required trigger words: {trigger_words}\n"
+        "Treat retrieved captions as soft constraints: learn their wording order, terminology, density, annotation grammar, material vocabulary, and visual training distribution, but never copy a caption verbatim. "
+        "User-specified subject, count, action, composition, color, material, and style requirements always win. "
+        f"Reference image policy: {'colors may be preserved' if preserve_reference_color else 'use only subject, structure, proportions, viewpoint, and composition; do not inherit source colors or materials'}.\n"
+        "Output one complete new positive prompt, include every required trigger word, and do not output negative prompts, citations, editing instructions, explanations, or LoRA weight syntax.\n"
+        f"Extra instruction: {custom_instruction or 'none'}\n\n"
+        f"Retrieved training captions:\n{examples}"
     )
 
 
-class Qwen35DatasetRAGReversePromptNode:
+class DatasetCaptionPickerNode:
     @classmethod
     def INPUT_TYPES(cls):
-        default_variant = (
-            _DEFAULT_VARIANT if _DEFAULT_VARIANT in VL_MODEL_CANDIDATES else list(VL_MODEL_CANDIDATES.keys())[0]
-        )
-        default_variant_label = next(
-            (key for key, value in VL_MODEL_LABEL_TO_VARIANT.items() if value == default_variant),
-            VL_MODEL_OPTIONS_GROUPED[0],
-        )
-        default_device = _DEFAULT_DEVICE if _DEFAULT_DEVICE in DEVICE_OPTIONS else "cuda"
-        default_attention_backend = (
-            DEFAULT_ATTENTION_BACKEND if DEFAULT_ATTENTION_BACKEND in ATTENTION_OPTIONS else "SDPA"
-        )
-        dataset_options = get_prompt_kb_dataset_options(_KB_ROOT)
-        dataset_default = dataset_options[0] if dataset_options else "__NO_DATASET_FOUND__"
-
+        options = _dataset_options()
         return {
             "required": {
-                "model_variant": (VL_MODEL_OPTIONS_GROUPED, {"default": default_variant_label}),
-                "device": (DEVICE_OPTIONS, {"default": default_device}),
-                "attention_backend": (ATTENTION_OPTIONS, {"default": default_attention_backend}),
-                "dataset_name": (
-                    dataset_options if dataset_options else [dataset_default],
-                    {
-                        "default": dataset_default,
-                        "tooltip": "Knowledge-base dataset to mimic. Refresh requires ComfyUI restart.",
-                    },
-                ),
-                "generation_mode": (
-                    _GENERATION_MODE_OPTIONS,
-                    {
-                        "default": "Dataset RAG",
-                        "tooltip": "Dataset RAG uses Qwen with retrieval. Direct Caption skips language-model generation and returns one dataset caption by seed.",
-                    },
-                ),
-                "language": (_LANGUAGE_OPTIONS, {"default": "Auto"}),
-                "few_shot_count": ("INT", {"default": 6, "min": 1, "max": 16}),
-                "include_trigger_words": ("BOOLEAN", {"default": True}),
-                "custom_instruction": ("STRING", {"default": "", "multiline": True}),
-                "max_tokens": ("INT", {"default": 256, "min": 64, "max": 2048}),
-                "temperature": ("FLOAT", {"default": 0.1, "min": 0.0, "max": 1.5}),
-                "top_p": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0}),
-                "repetition_penalty": ("FLOAT", {"default": 1.05, "min": 0.5, "max": 2.0}),
-                "keep_model_loaded": ("BOOLEAN", {"default": True}),
-                "seed": ("INT", {"default": 1, "min": 1, "max": 2**32 - 1}),
-                "image": ("IMAGE",),
+                "dataset_name": (options, {"default": options[0]}),
+                "selection_mode": (_SELECTION_OPTIONS, {"default": "Random"}),
+                "selection_seed": ("INT", {"default": 1, "min": 0, "max": 2**32 - 1}),
+                "index": ("INT", {"default": 0, "min": 0, "max": 2**32 - 1}),
             }
         }
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("RESPONSE",)
-    FUNCTION = "reverse_prompt_with_dataset_rag"
-    CATEGORY = "IAT/Qwen3.5"
+    RETURN_TYPES = ("STRING", "INT", "STRING", "STRING")
+    RETURN_NAMES = ("caption", "caption_index", "trigger_words", "dataset_metadata")
+    FUNCTION = "pick_caption"
+    CATEGORY = "IAT/Dataset"
 
-    def reverse_prompt_with_dataset_rag(
+    @classmethod
+    def IS_CHANGED(cls, dataset_name, **kwargs):
+        return _dataset_change_token(dataset_name)
+
+    def pick_caption(self, dataset_name, selection_mode, selection_seed, index):
+        record = _selected_record(dataset_name)
+        try:
+            entry, selected_index = choose_caption(record, selection_mode, selection_seed, index)
+        except Exception as exc:
+            raise RuntimeError(f"[IAT] Caption selection failed: {exc}") from exc
+        metadata = dataset_metadata(record)
+        metadata["selected_record_id"] = entry.record_id
+        metadata["selected_image_path"] = entry.relative_image_path
+        return (
+            entry.caption,
+            selected_index,
+            ", ".join(record.trigger_words),
+            json.dumps(metadata, ensure_ascii=False),
+        )
+
+
+class DatasetRAGPromptGeneratorNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        options = _dataset_options()
+        return {
+            "required": {
+                "user_prompt": ("STRING", {"default": "", "multiline": True}),
+                "dataset_name": (options, {"default": options[0]}),
+                "backend": (_BACKEND_OPTIONS, {"default": _DEFAULT_BACKEND}),
+                "model_override": ("STRING", {"default": ""}),
+                "base_url_override": ("STRING", {"default": ""}),
+                "retrieval_seed": ("INT", {"default": 1, "min": 0, "max": 2**32 - 1}),
+                "generation_seed": ("INT", {"default": 1, "min": 0, "max": 2**32 - 1}),
+                "top_k": ("INT", {"default": 4, "min": 1, "max": 8}),
+                "preserve_reference_color": ("BOOLEAN", {"default": False}),
+                "custom_instruction": ("STRING", {"default": "", "multiline": True}),
+                "max_tokens": ("INT", {"default": 512, "min": 64, "max": 4096}),
+                "temperature": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.5}),
+                "top_p": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0}),
+                "repetition_penalty": ("FLOAT", {"default": 1.05, "min": 0.5, "max": 2.0}),
+                "timeout_seconds": ("INT", {"default": int(_LLM_CFG.get("timeout_seconds") or 300), "min": 5, "max": 900}),
+            },
+            "optional": {
+                "image": ("IMAGE",),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("prompt", "retrieved_captions", "retrieval_debug", "dataset_metadata")
+    FUNCTION = "generate_prompt"
+    CATEGORY = "IAT/Dataset"
+
+    @classmethod
+    def IS_CHANGED(cls, dataset_name, **kwargs):
+        return _dataset_change_token(dataset_name)
+
+    def generate_prompt(
         self,
-        model_variant,
-        device,
-        attention_backend,
+        user_prompt,
         dataset_name,
-        generation_mode,
-        language,
-        few_shot_count,
-        include_trigger_words,
+        backend,
+        model_override,
+        base_url_override,
+        retrieval_seed,
+        generation_seed,
+        top_k,
+        preserve_reference_color,
         custom_instruction,
         max_tokens,
         temperature,
         top_p,
         repetition_penalty,
-        keep_model_loaded,
-        seed,
-        image,
+        timeout_seconds,
+        image=None,
     ):
-        pil_images = _tensor_to_pil_list(image)
-        if len(pil_images) == 0:
-            return ("[IAT] Please connect one IMAGE input for dataset RAG reverse prompt.",)
+        if not (user_prompt or "").strip():
+            raise RuntimeError("[IAT] user_prompt is required.")
 
-        if DATASET_KB_ERRORS:
-            return ("\n".join(DATASET_KB_ERRORS),)
+        record = _selected_record(dataset_name)
 
-        record = DATASET_KB_RECORDS.get(dataset_name)
-        if record is None:
-            return (
-                f"[IAT] Dataset `{dataset_name}` was not found under `{_KB_ROOT}`. "
-                "Restart ComfyUI after adding JSON files.",
+        try:
+            reference_image = _tensor_to_pil(image)
+            index = get_dataset_index(
+                record,
+                _index_cache_root(),
+                embedding_model_path=_embedding_model_path(),
+                require_embeddings=bool(_embedding_model_path()),
+                embedding_device=_EMBEDDING_DEVICE,
+                embedding_batch_size=_EMBEDDING_BATCH_SIZE,
             )
+            retrieved, debug = index.retrieve(
+                (user_prompt or "").strip(),
+                reference_image=reference_image,
+                preserve_reference_color=bool(preserve_reference_color),
+                top_k=top_k,
+                seed=retrieval_seed,
+            )
+            debug["retrieval_seed"] = int(retrieval_seed)
+            debug["generation_seed"] = int(generation_seed)
+            debug["dataset_root"] = str(_dataset_root())
 
-        if generation_mode == "Direct Caption":
-            return (_sanitize_output_prompt(select_caption_by_seed(record, seed)),)
-
-        model_variant = _to_vl_variant(model_variant)
-        output_language = resolve_output_language(language, record)
-        achromatic_images = _to_achromatic_reference(pil_images)
-        retrieval_description = generate_vision_text(
-            variant=model_variant,
-            device=device,
-            attention_backend=attention_backend,
-            images=achromatic_images,
-            text_prompt=_build_retrieval_prompt(output_language),
-            max_tokens=min(max_tokens, 192),
-            temperature=0.0,
-            top_p=1.0,
-            repetition_penalty=1.0,
-            seed=seed,
-        )
-
-        top_captions = retrieve_top_captions(retrieval_description, record, few_shot_count)
-        palette_captions = select_palette_reference_captions(record, seed=seed, count=2)
-        final_prompt = generate_vision_text(
-            variant=model_variant,
-            device=device,
-            attention_backend=attention_backend,
-            images=achromatic_images,
-            text_prompt=_build_generation_prompt(
+            defaults = _backend_defaults(backend)
+            model = (model_override or "").strip() or defaults["model"]
+            base_url = (base_url_override or "").strip() or defaults["base_url"]
+            language = _output_language(record, "Auto")
+            generation_prompt = _build_generation_instruction(
                 record=record,
-                language=output_language,
-                include_trigger_words=include_trigger_words,
+                user_prompt=(user_prompt or "").strip(),
+                retrieved=retrieved,
+                language=language,
                 custom_instruction=(custom_instruction or "").strip(),
-                palette_captions=palette_captions,
-                top_captions=top_captions,
-            ),
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-            seed=seed,
-        )
-
-        if not keep_model_loaded:
-            unload_all_models()
-        return (_sanitize_output_prompt(final_prompt),)
+                preserve_reference_color=bool(preserve_reference_color),
+            )
+            output = generate_with_backend(
+                backend=backend,
+                model=model,
+                base_url=base_url,
+                prompt=generation_prompt,
+                images=_generation_images(reference_image, bool(preserve_reference_color)),
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                seed=generation_seed,
+                timeout=timeout_seconds,
+                local_device=str(_MODEL_CFG.get("device") or "cuda"),
+                local_attention_backend=_DEFAULT_ATTENTION_BACKEND,
+                keep_local_model_loaded=True,
+                ollama_keep_alive=_OLLAMA_CFG.get("keep_alive", -1),
+                ollama_think=bool(_OLLAMA_CFG.get("think", False)),
+                vllm_api_key=str(_VLLM_CFG.get("api_key") or ""),
+            )
+            final_prompt = _ensure_trigger_words(output, record)
+            if not final_prompt:
+                raise BackendError("[IAT] Generation backend returned an empty prompt.")
+            return (
+                final_prompt,
+                json.dumps(retrieved, ensure_ascii=False),
+                json.dumps(debug, ensure_ascii=False),
+                json.dumps(dataset_metadata(record), ensure_ascii=False),
+            )
+        except (DatasetError, EmbeddingModelUnavailable, BackendError) as exc:
+            raise RuntimeError(str(exc)) from exc
+        except Exception as exc:
+            raise RuntimeError(f"[IAT] Dataset RAG failed: {exc}") from exc
 
 
 NODE_CLASS_MAPPINGS = {
-    "Qwen35DatasetRAGReversePrompt by IAT": Qwen35DatasetRAGReversePromptNode,
+    "DatasetCaptionPicker by IAT": DatasetCaptionPickerNode,
+    "DatasetRAGPromptGenerator by IAT": DatasetRAGPromptGeneratorNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Qwen35DatasetRAGReversePrompt by IAT": "Qwen3.5 数据集RAG反推提示词（IAT）",
+    "DatasetCaptionPicker by IAT": "Dataset Caption Picker（IAT）",
+    "DatasetRAGPromptGenerator by IAT": "Dataset RAG Prompt Generator（IAT）",
 }

@@ -83,7 +83,30 @@ runtime:
   default_attention_backend: "SDPA"
   prefer_optimized_attention: true
   enable_torch_compile: false
-  offline_only: false
+  offline_only: true
+
+datasets:
+  root: "../IAT-datasets"
+  embedding_model_path: "models/embeddings/chinese-clip-vit-base-patch16"
+  embedding_device: "cpu"  # cpu / cuda / auto
+  embedding_batch_size: 16
+  index_cache_dir: ""
+
+llm:
+  default_backend: "Ollama"
+  default_model: "qwen3.5:122b"
+  timeout_seconds: 300
+
+ollama:
+  base_url: "http://127.0.0.1:11434"
+  model: "qwen3.5:122b"
+  keep_alive: -1
+  think: false
+
+vllm:
+  base_url: "http://127.0.0.1:8000/v1"
+  model: "qwen3.5:122b"
+  api_key: ""
 
 openai:
   base_url: "https://api.openai.com/v1"
