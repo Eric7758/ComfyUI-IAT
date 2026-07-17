@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -101,6 +102,8 @@ class DatasetRepositoryTests(unittest.TestCase):
             index = get_dataset_index(record, Path(temp) / "cache")
             results, debug = index.retrieve("000000", top_k=1)
         self.assertEqual(debug["reference_image_count"], 0)
+        self.assertEqual(debug["selection_method"], "seeded_weighted_mmr")
+        self.assertTrue(debug["candidate_pool"])
         self.assertEqual(set(results[0]["image_roles"]), {"control1", "control2", "control3", "result"})
         self.assertIn("dataset_A_result/000000.png", results[0]["image_paths"]["result"])
 
@@ -191,6 +194,48 @@ class DatasetRepositoryTests(unittest.TestCase):
             rebuilt = get_dataset_index(changed_record, cache)
             self.assertNotEqual(rebuilt.fingerprint, index.fingerprint)
 
+    def test_exploration_retrieval_is_reproducible_and_seeded(self):
+        from py.nodes.dataset_repository import DatasetEntry, DatasetRecord
+
+        record = DatasetRecord(
+            dataset_name="dataset_A",
+            version="1.0",
+            base_model="Flux.2 Klein 9B",
+            lora_name="model_A",
+            language="zh",
+            trigger_words=["trigger_a"],
+            entries=[
+                DatasetEntry(str(index), f"黑色越野 CMF 样本 {index}")
+                for index in range(24)
+            ],
+            source_path=Path("dataset.json"),
+        )
+        index = DatasetIndex(record, "fingerprint")
+        first, first_debug = index.retrieve("黑色越野", top_k=4, seed=17, exploration_strength="Medium")
+        repeat, repeat_debug = index.retrieve("黑色越野", top_k=4, seed=17, exploration_strength="Medium")
+        alternate, _ = index.retrieve("黑色越野", top_k=4, seed=18, exploration_strength="Medium")
+        self.assertEqual([item["record_id"] for item in first], [item["record_id"] for item in repeat])
+        self.assertEqual(first_debug, repeat_debug)
+        self.assertNotEqual(
+            [item["record_id"] for item in first],
+            [item["record_id"] for item in alternate],
+        )
+        self.assertEqual(first_debug["exploration_strength"], "Medium")
+
+        skewed_index = DatasetIndex(
+            record,
+            "fingerprint",
+            text_embeddings=[[1.0, 0.0]] + [[0.98, 0.2]] * 23,
+            embedding_model_path="model",
+        )
+        with patch("py.nodes.dataset_repository._encode_text", return_value=[1.0, 0.0]):
+            skewed_first, _ = skewed_index.retrieve("黑色越野", top_k=4, seed=17, exploration_strength="Medium")
+            skewed_alternate, _ = skewed_index.retrieve("黑色越野", top_k=4, seed=18, exploration_strength="Medium")
+        self.assertNotEqual(
+            [item["record_id"] for item in skewed_first],
+            [item["record_id"] for item in skewed_alternate],
+        )
+
     def test_fingerprint_tracks_unpaired_files_for_diagnostics(self):
         from py.nodes.dataset_repository import dataset_fingerprint
 
@@ -200,6 +245,18 @@ class DatasetRepositoryTests(unittest.TestCase):
             Image.new("RGB", (8, 8), "black").save(dataset / "images" / "unpaired.png")
             after = dataset_fingerprint(load_dataset_record(dataset))
         self.assertNotEqual(before, after)
+
+    def test_fingerprint_ignores_mtime_only_changes(self):
+        from py.nodes.dataset_repository import dataset_fingerprint
+
+        with tempfile.TemporaryDirectory() as temp:
+            dataset = self.make_dataset(Path(temp))
+            image_path = dataset / "images" / "0001.png"
+            before = dataset_fingerprint(load_dataset_record(dataset))
+            stat = image_path.stat()
+            os.utime(image_path, ns=(stat.st_atime_ns + 1_000_000, stat.st_mtime_ns + 1_000_000))
+            after = dataset_fingerprint(load_dataset_record(dataset))
+        self.assertEqual(before, after)
 
     @patch("py.nodes.dataset_repository._encode_image_batch")
     @patch("py.nodes.dataset_repository._encode_text_batch")
@@ -292,6 +349,24 @@ class DatasetRepositoryTests(unittest.TestCase):
             payload = json.loads((cache_dir / "dataset_A.index.json").read_text(encoding="utf-8"))
         self.assertEqual(payload["schema_version"], 3)
         self.assertEqual(len(payload["entries"][0]["image_paths"]), 4)
+
+    @patch("py.nodes.dataset_repository._load_embedding_model")
+    @patch("py.nodes.dataset_repository._encode_text_batch", return_value=[[1.0, 0.0], [0.0, 1.0]])
+    @patch("py.nodes.dataset_repository._encode_image_batch", return_value=[[1.0, 0.0], [0.0, 1.0]])
+    @patch("py.nodes.dataset_repository._resolve_embedding_device", return_value="cpu")
+    def test_corrupt_embedding_cache_is_rebuilt(self, resolve_device, encode_image_batch, encode_text_batch, load_model):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            record = load_dataset_record(self.make_dataset(root))
+            cache_dir = root / "cache"
+            get_dataset_index(record, cache_dir, embedding_model_path="model")
+            cache_path = cache_dir / "dataset_A.index.json"
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            payload["text_embeddings"] = [[1.0, 0.0]]
+            cache_path.write_text(json.dumps(payload), encoding="utf-8")
+            rebuilt = get_dataset_index(record, cache_dir, embedding_model_path="model")
+        self.assertEqual(len(rebuilt.text_embeddings), 2)
+        self.assertEqual(encode_text_batch.call_count, 2)
 
     def test_discovery_skips_index_cache_json(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -427,6 +502,180 @@ class NodeBehaviorTests(unittest.TestCase):
         generator = module.DatasetRAGPromptGeneratorNode()
         self.assertEqual(generator.RETURN_NAMES, ("prompt", "retrieved_captions", "retrieval_debug", "dataset_metadata"))
         self.assertEqual(set(generator.INPUT_TYPES()["optional"]), {"image", "image_2", "image_3", "image_4"})
+        required = generator.INPUT_TYPES()["required"]
+        self.assertIn("exploration_strength", required)
+        self.assertIn("variation_seed", required)
+
+    def test_variation_plan_is_reproducible_and_keeps_hard_family_hex_pairs(self):
+        from py.nodes.qwen35_dataset_rag_nodes import _build_variation_plan
+
+        prompt = "黑色系（玄武岩黑，#1f1f1d）与棕色系（复古鞍棕，#8b4f2f）越野 CMF"
+        retrieved = [
+            {
+                "caption": "座椅主面麂皮，中控台前饰板皮质，主辅分色",
+            }
+        ]
+        first = _build_variation_plan(prompt, retrieved, 123, "Medium")
+        repeat = _build_variation_plan(prompt, retrieved, 123, "Medium")
+        alternate = _build_variation_plan(prompt, retrieved, 124, "Medium")
+        self.assertEqual(first, repeat)
+        self.assertNotEqual(first, alternate)
+        self.assertEqual(set(first["hard_color_families"]), {"black", "brown"})
+        for assignment in first["component_assignments"]:
+            self.assertEqual(assignment["hex"], first["proposed_palette"][assignment["family"]])
+        assigned_families = {item["family"] for item in first["component_assignments"]}
+        self.assertTrue({"black", "brown"}.issubset(assigned_families))
+
+    def test_exploration_temperature_mapping(self):
+        from py.nodes.qwen35_dataset_rag_nodes import _effective_temperature
+
+        self.assertEqual(_effective_temperature(0.0, "Mild"), 0.15)
+        self.assertEqual(_effective_temperature(0.0, "Medium"), 0.35)
+        self.assertEqual(_effective_temperature(0.0, "Strong"), 0.55)
+        self.assertEqual(_effective_temperature(0.2, "Strong"), 0.2)
+
+    def test_generator_reuses_same_seed_and_exposes_variation_debug(self):
+        import py.nodes.qwen35_dataset_rag_nodes as module
+        from py.nodes.dataset_repository import DatasetEntry, DatasetRecord
+
+        record = DatasetRecord(
+            dataset_name="dataset_A",
+            version="1.0",
+            base_model="Flux.2 Klein 9B",
+            lora_name="model_A",
+            language="zh",
+            trigger_words=["trigger_a"],
+            entries=[DatasetEntry("0001", "黑色越野座椅主面麂皮")],
+            source_path=Path("dataset.json"),
+        )
+        index_value = DatasetIndex(record, "fingerprint")
+        kwargs = {
+            "user_prompt": "黑色系越野内饰 CMF",
+            "dataset_name": "dataset_A",
+            "backend": "Ollama",
+            "model_override": "qwen3.5:122b",
+            "base_url_override": "http://127.0.0.1:11434",
+            "retrieval_seed": 7,
+            "generation_seed": 8,
+            "exploration_strength": "Medium",
+            "variation_seed": 9,
+            "top_k": 1,
+            "preserve_reference_color": False,
+            "custom_instruction": "",
+            "max_tokens": 128,
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "repetition_penalty": 1.05,
+            "timeout_seconds": 10,
+        }
+        with patch.object(module, "_selected_record", return_value=record), patch.object(
+            module, "dataset_fingerprint", return_value="fingerprint"
+        ), patch.object(module, "get_dataset_index", return_value=index_value), patch.object(
+            module, "generate_with_backend", return_value="黑色系 trigger_a 越野内饰"
+        ) as generate:
+            first = module.DatasetRAGPromptGeneratorNode().generate_prompt(**kwargs)
+            repeat = module.DatasetRAGPromptGeneratorNode().generate_prompt(**kwargs)
+        self.assertEqual(first, repeat)
+        debug = json.loads(first[2])
+        self.assertEqual(debug["variation_seed"], 9)
+        self.assertEqual(debug["exploration_strength"], "Medium")
+        self.assertEqual(debug["effective_temperature"], 0.35)
+        self.assertIn("variation_plan", debug)
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(generate.call_args.kwargs["temperature"], 0.35)
+        self.assertEqual(generate.call_args.kwargs["seed"], debug["generation_seed"])
+
+        variation_kwargs = dict(kwargs)
+        variation_kwargs["variation_seed"] = 10
+        with patch.object(module, "_selected_record", return_value=record), patch.object(
+            module, "dataset_fingerprint", return_value="fingerprint"
+        ), patch.object(module, "get_dataset_index", return_value=index_value), patch.object(
+            module, "generate_with_backend", return_value="黑色系 trigger_a 越野内饰"
+        ):
+            variation_output = module.DatasetRAGPromptGeneratorNode().generate_prompt(**variation_kwargs)
+        variation_debug = json.loads(variation_output[2])
+        self.assertNotEqual(debug["composition_seed"], variation_debug["composition_seed"])
+        self.assertEqual(debug["generation_seed"], variation_debug["generation_seed"])
+
+    def test_generator_repairs_missing_hard_color_family(self):
+        import py.nodes.qwen35_dataset_rag_nodes as module
+        from py.nodes.dataset_repository import DatasetEntry, DatasetRecord
+
+        record = DatasetRecord(
+            dataset_name="dataset_A",
+            version="1.0",
+            base_model="Flux.2 Klein 9B",
+            lora_name="model_A",
+            language="zh",
+            trigger_words=["trigger_a"],
+            entries=[DatasetEntry("0001", "黑色越野")],
+            source_path=Path("dataset.json"),
+        )
+        with patch.object(module, "_selected_record", return_value=record), patch.object(
+            module, "dataset_fingerprint", return_value="fingerprint"
+        ), patch.object(module, "get_dataset_index", return_value=DatasetIndex(record, "fingerprint")), patch.object(
+            module, "generate_with_backend", return_value="trigger_a brown leather"
+        ):
+            output = module.DatasetRAGPromptGeneratorNode().generate_prompt(
+                user_prompt="黑色系越野内饰",
+                dataset_name="dataset_A",
+                backend="Ollama",
+                model_override="qwen3.5:122b",
+                base_url_override="",
+                retrieval_seed=1,
+                generation_seed=1,
+                exploration_strength="Medium",
+                variation_seed=1,
+                top_k=1,
+                preserve_reference_color=False,
+                custom_instruction="",
+                max_tokens=128,
+                temperature=0.0,
+                top_p=1.0,
+                repetition_penalty=1.05,
+                timeout_seconds=10,
+            )
+        self.assertIn("黑色系", output[0])
+        self.assertNotIn("brown", output[0].casefold())
+
+    def test_generator_rejects_empty_backend_output(self):
+        import py.nodes.qwen35_dataset_rag_nodes as module
+        from py.nodes.dataset_repository import DatasetEntry, DatasetRecord
+
+        record = DatasetRecord(
+            dataset_name="dataset_A",
+            version="1.0",
+            base_model="Flux.2 Klein 9B",
+            lora_name="model_A",
+            language="zh",
+            trigger_words=["trigger_a"],
+            entries=[DatasetEntry("0001", "黑色越野")],
+            source_path=Path("dataset.json"),
+        )
+        with patch.object(module, "_selected_record", return_value=record), patch.object(
+            module, "dataset_fingerprint", return_value="fingerprint"
+        ), patch.object(module, "get_dataset_index", return_value=DatasetIndex(record, "fingerprint")), patch.object(
+            module, "generate_with_backend", return_value="   "
+        ), self.assertRaisesRegex(RuntimeError, "empty prompt"):
+            module.DatasetRAGPromptGeneratorNode().generate_prompt(
+                user_prompt="黑色系越野内饰",
+                dataset_name="dataset_A",
+                backend="Ollama",
+                model_override="qwen3.5:122b",
+                base_url_override="",
+                retrieval_seed=1,
+                generation_seed=1,
+                exploration_strength="Medium",
+                variation_seed=1,
+                top_k=1,
+                preserve_reference_color=False,
+                custom_instruction="",
+                max_tokens=128,
+                temperature=0.0,
+                top_p=1.0,
+                repetition_penalty=1.05,
+                timeout_seconds=10,
+            )
 
     def test_reference_image_collection_supports_four_and_rejects_five(self):
         import py.nodes.qwen35_dataset_rag_nodes as module

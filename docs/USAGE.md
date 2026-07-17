@@ -204,11 +204,18 @@ reference image is optional and can be used for structure-aware retrieval.
 | backend | Dropdown | Ollama | `Ollama`, `vLLM`, or in-process `Local` |
 | model_override | String | config default | Backend-specific model name |
 | base_url_override | String | config default | Backend endpoint override |
-| retrieval_seed | Int | 1 | Reproducible retrieval tie-breaker |
-| generation_seed | Int | 1 | Backend generation seed |
+| retrieval_seed | Int | 1 | Reproducible retrieval seed within the relevant candidate pool |
+| generation_seed | Int | 1 | Reproducible backend generation seed |
+| exploration_strength | Dropdown | Medium | `Mild`, `Medium`, or `Strong`; controls retrieval diversity and composition variation |
+| variation_seed | Int | 1 | Reproducible CMF component/color/material combination seed |
 | top_k | Int | 4 | Final MMR-selected captions, 1-8 |
 | preserve_reference_color | Boolean | False | Use RGB instead of grayscale reference image |
 | custom_instruction | String | "" | Extra generation instruction |
+| max_tokens | Int | 512 | Maximum generated prompt length |
+| temperature | Float | 0.0 | `0.0` uses the exploration mapping; positive values override it |
+| top_p | Float | 1.0 | Nucleus sampling parameter |
+| repetition_penalty | Float | 1.05 | Repetition penalty passed to the backend |
+| timeout_seconds | Int | 300 | Backend request timeout |
 | image | IMAGE | optional | Reference image 1 |
 | image_2 | IMAGE | optional | Reference image 2 |
 | image_3 | IMAGE | optional | Reference image 3 |
@@ -218,9 +225,13 @@ reference image is optional and can be used for structure-aware retrieval.
 
 - `Dataset Caption Picker` does not load a model and uses `random.Random(seed)` for reproducible sampling.
 - `Dataset RAG Prompt Generator` combines Chinese BM25/character n-gram retrieval with an optional local Chinese CLIP index.
+- Exploration is deterministic: the same backend, model, dataset fingerprint/version, prompt, and seeds produce the same retrieval/composition inputs. Change `retrieval_seed` to explore nearby training examples, `variation_seed` to explore CMF combinations, or `generation_seed` to vary only backend sampling.
+- `temperature=0` means automatic exploration temperature: `Mild=0.15`, `Medium=0.35`, `Strong=0.55`. Set a positive temperature to override the mapped value.
+- User-specified color families are hard constraints. Color names and HEX values may be varied, and the plan may create new component/color/material combinations. The final prompt is repaired to include any requested color family omitted by the backend.
 - Multi-view datasets group the same filename stem across `control1`, `control2`, `control3`, and `result`; one `result/<stem>.txt` caption represents the group.
 - The generator accepts up to four reference images. A batched IMAGE input is expanded into individual images and sent together to the selected backend.
 - The index cache is automatically rebuilt when `dataset.json`, image files, or captions change.
+- `retrieval_debug` includes the hybrid weights, candidate pool scores/tie-breakers, selected ranks, MMR profile, image counts, and index version for diagnosing relevance versus exploration.
 - Local generation reuses the existing Transformers cache. Ollama uses native `/api/chat`; vLLM uses `/v1/chat/completions`.
 - The default configuration is fully offline and points at local Ollama `qwen3.5:122b`.
 - The node returns the final prompt, retrieved captions, retrieval scores/debug JSON, and dataset metadata.

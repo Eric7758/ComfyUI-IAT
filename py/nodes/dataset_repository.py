@@ -22,6 +22,11 @@ _CJK_RE = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]")
 _PUNCT_RE = re.compile(r"[^\w\s\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]+", re.UNICODE)
 _CONTROL_ROLE_RE = re.compile(r"(?:^|[_\-\s])control([1-3])$", re.IGNORECASE)
 _IMAGE_ROLES = ("control1", "control2", "control3", "result")
+_EXPLORATION_PROFILES = {
+    "Mild": {"candidate_k": 16, "relevance": 0.85, "diversity": 0.15, "sampling_temperature": 0.10},
+    "Medium": {"candidate_k": 16, "relevance": 0.65, "diversity": 0.35, "sampling_temperature": 0.20},
+    "Strong": {"candidate_k": 16, "relevance": 0.50, "diversity": 0.50, "sampling_temperature": 0.32},
+}
 _EMBEDDING_MODELS: Dict[Tuple[str, str], Tuple[Any, Any]] = {}
 
 
@@ -212,15 +217,16 @@ def _build_entries_from_multiview(
             (path for path in role_dir.rglob("*") if path.is_file() and path.suffix.lower() in _IMAGE_SUFFIXES),
             key=lambda path: path.as_posix().lower(),
         ):
-            group = groups.setdefault(image_path.stem, {})
+            group = groups.setdefault(image_path.stem.casefold(), {})
             if role in group:
                 warnings.append(f"Duplicate `{role}` image for sample `{image_path.stem}`; kept the first file.")
                 continue
             group[role] = image_path
 
     entries: List[DatasetEntry] = []
-    for record_id in sorted(groups, key=str.casefold):
-        image_paths = groups[record_id]
+    for group_key in sorted(groups, key=str.casefold):
+        image_paths = groups[group_key]
+        record_id = image_paths.get(caption_role, next(iter(image_paths.values()))).stem
         caption_image = image_paths.get(caption_role)
         if caption_image is None:
             warnings.append(f"Missing `{caption_role}` image for sample `{record_id}`; skipped.")
@@ -384,9 +390,12 @@ def choose_caption(record: DatasetRecord, mode: str, seed: int, index: int = 0) 
 
 
 def dataset_fingerprint(record: DatasetRecord) -> str:
+    # Hash content rather than mtimes so the same dataset version remains stable
+    # after a touch/copy operation while still invalidating changed image bytes.
     digest = hashlib.sha256()
-    digest.update(record.source_path.read_bytes())
     dataset_dir = record.source_path.parent
+    digest.update(record.source_path.name.encode("utf-8"))
+    digest.update(record.source_path.read_bytes())
     tracked_suffixes = _IMAGE_SUFFIXES | {".txt"}
     for path in sorted(
         (
@@ -396,11 +405,14 @@ def dataset_fingerprint(record: DatasetRecord) -> str:
         ),
         key=lambda item: item.as_posix().lower(),
     ):
-        stat = path.stat()
         relative = path.relative_to(dataset_dir).as_posix()
-        digest.update(f"{relative}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8"))
-        if path.suffix.lower() == ".txt":
-            digest.update(path.read_bytes())
+        digest.update(relative.encode("utf-8"))
+        try:
+            with path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+        except OSError as exc:
+            raise DatasetError(f"[IAT] Could not read dataset file `{path}` while computing its fingerprint: {exc}") from exc
     return digest.hexdigest()
 
 
@@ -436,6 +448,35 @@ def _mean_vector(vectors: Sequence[Optional[Sequence[float]]]) -> Optional[List[
     if norm < 1e-12:
         return [0.0] * dimension
     return [value / norm for value in values]
+
+
+def _exploration_profile(value: str) -> Tuple[str, Dict[str, float]]:
+    normalized = (value or "Medium").strip().title()
+    if normalized not in _EXPLORATION_PROFILES:
+        normalized = "Medium"
+    return normalized, _EXPLORATION_PROFILES[normalized]
+
+
+def _seeded_weighted_choice(
+    candidates: Sequence[int],
+    utilities: Sequence[float],
+    rng: random.Random,
+    sampling_temperature: float,
+) -> int:
+    if not candidates:
+        raise DatasetError("[IAT] Cannot choose from an empty retrieval candidate set.")
+    scale = max(float(sampling_temperature), 1e-6)
+    maximum = max(utilities)
+    weights = [math.exp((utility - maximum) / scale) for utility in utilities]
+    total = sum(weights)
+    if total <= 0.0 or not math.isfinite(total):
+        return candidates[rng.randrange(len(candidates))]
+    target = rng.random() * total
+    for candidate, weight in zip(candidates, weights):
+        target -= weight
+        if target <= 0.0:
+            return candidate
+    return candidates[-1]
 
 
 class DatasetIndex:
@@ -511,9 +552,11 @@ class DatasetIndex:
         top_k: int = 4,
         candidate_k: int = 16,
         seed: int = 0,
+        exploration_strength: str = "Medium",
     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         top_k = max(1, min(8, int(top_k)))
-        candidate_k = max(top_k, min(16, int(candidate_k)))
+        exploration_name, profile = _exploration_profile(exploration_strength)
+        candidate_k = max(top_k, min(int(candidate_k), int(profile["candidate_k"])))
         references = list(reference_images or [])
         if reference_image is not None:
             references.insert(0, reference_image)
@@ -562,27 +605,33 @@ class DatasetIndex:
             + weights["bm25"] * normalized_bm25[idx]
             for idx in range(len(self.record.entries))
         ]
-        # Seed only affects deterministic tie-breaking. The semantic score remains
-        # unchanged, so retrieval can be reproduced without introducing noise.
+        # The seed controls only deterministic sampling within the relevant pool.
+        # It never changes the semantic scores or allows candidates outside the pool.
         tie_rng = random.Random(int(seed))
         tie_breakers = {idx: tie_rng.random() for idx in range(len(combined))}
-        candidates = sorted(
+        ranked_candidates = sorted(
             range(len(combined)),
             key=lambda idx: (combined[idx], tie_breakers[idx], self.record.entries[idx].record_id),
             reverse=True,
-        )[:candidate_k]
+        )
+        candidates = ranked_candidates[:candidate_k]
+        candidate_pool = list(candidates)
 
         selected: List[int] = []
         while candidates and len(selected) < top_k:
-            best = max(
+            utilities = [
+                profile["relevance"] * combined[idx]
+                - (
+                    profile["diversity"]
+                    * max((self._similarity_to_selected(idx, other) for other in selected), default=0.0)
+                )
+                for idx in candidates
+            ]
+            best = _seeded_weighted_choice(
                 candidates,
-                key=lambda idx: (
-                    combined[idx]
-                    if not selected
-                    else 0.75 * combined[idx]
-                    - 0.25 * max(self._similarity_to_selected(idx, other) for other in selected)
-                    + tie_breakers[idx] * 1e-9
-                ),
+                utilities,
+                tie_rng,
+                profile["sampling_temperature"],
             )
             selected.append(best)
             candidates.remove(best)
@@ -606,6 +655,7 @@ class DatasetIndex:
                     },
                 }
             )
+        selected_ranks = {idx: rank for rank, idx in enumerate(selected, start=1)}
         debug = {
             "index_version": self.version,
             "embedding_model_path": self.embedding_model_path,
@@ -616,6 +666,28 @@ class DatasetIndex:
             "weights": weights,
             "candidate_k": candidate_k,
             "selected_k": len(results),
+            "retrieval_seed": int(seed),
+            "exploration_strength": exploration_name,
+            "relevance_weight": profile["relevance"],
+            "diversity_weight": profile["diversity"],
+            "sampling_temperature": profile["sampling_temperature"],
+            "selection_method": "seeded_weighted_mmr",
+            "ranking_source": "hybrid_score_then_seeded_mmr",
+            "candidate_pool": [
+                {
+                    "candidate_rank": rank,
+                    "record_id": self.record.entries[idx].record_id,
+                    "selected_rank": selected_ranks.get(idx),
+                    "score": round(float(combined[idx]), 6),
+                    "tie_breaker": round(float(tie_breakers[idx]), 6),
+                    "components": {
+                        "bm25": round(float(normalized_bm25[idx]), 6),
+                        "text_embedding": round(float(normalized_text[idx]), 6),
+                        "image_embedding": round(float(normalized_image[idx]), 6),
+                    },
+                }
+                for rank, idx in enumerate(candidate_pool, start=1)
+            ],
             "warnings": self.warnings + self.record.warnings,
         }
         return results, debug
@@ -799,12 +871,35 @@ def _deserialize_index(
     cached_model_path = str(payload.get("embedding_model_path") or "")
     if cached_model_path != str(embedding_model_path or ""):
         return None
+    text_embeddings = payload.get("text_embeddings") or []
+    image_embeddings = payload.get("image_embeddings") or []
+    gray_embeddings = payload.get("gray_embeddings") or []
+    if cached_model_path:
+        expected_count = len(record.entries)
+        if any(
+            not isinstance(vectors, list) or len(vectors) != expected_count
+            for vectors in (text_embeddings, image_embeddings, gray_embeddings)
+        ):
+            return None
+        if any(vector is None for vector in text_embeddings):
+            return None
+        dimensions: Optional[int] = None
+        for vectors in (text_embeddings, image_embeddings, gray_embeddings):
+            for vector in vectors:
+                if vector is None:
+                    continue
+                if not isinstance(vector, list) or not vector:
+                    return None
+                if dimensions is None:
+                    dimensions = len(vector)
+                if len(vector) != dimensions or any(not isinstance(value, (int, float)) for value in vector):
+                    return None
     return DatasetIndex(
         record,
         fingerprint,
-        text_embeddings=payload.get("text_embeddings") or [],
-        image_embeddings=payload.get("image_embeddings") or [],
-        gray_embeddings=payload.get("gray_embeddings") or [],
+        text_embeddings=text_embeddings,
+        image_embeddings=image_embeddings,
+        gray_embeddings=gray_embeddings,
         embedding_model_path=cached_model_path,
         embedding_device=embedding_device,
     )
