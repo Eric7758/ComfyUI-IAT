@@ -126,6 +126,7 @@ def _generate_ollama(
     timeout: int,
     keep_alive: Any,
     think: bool,
+    system_prompt: str = "",
 ) -> str:
     if not model.strip():
         raise BackendError("[IAT] Ollama model name is empty.")
@@ -139,9 +140,13 @@ def _generate_ollama(
         "repeat_penalty": float(repetition_penalty),
         "seed": int(seed),
     }
+    messages = []
+    if (system_prompt or "").strip():
+        messages.append({"role": "system", "content": system_prompt.strip()})
+    messages.append(message)
     payload = {
         "model": model.strip(),
-        "messages": [message],
+        "messages": messages,
         "stream": False,
         "keep_alive": keep_alive,
         "think": bool(think),
@@ -167,6 +172,7 @@ def _generate_vllm(
     seed: int,
     timeout: int,
     api_key: str,
+    system_prompt: str = "",
 ) -> str:
     if not model.strip():
         raise BackendError("[IAT] vLLM model name is empty.")
@@ -175,16 +181,21 @@ def _generate_vllm(
         content = [{"type": "text", "text": prompt}]
         for image in images:
             content.append({"type": "image_url", "image_url": {"url": _pil_to_data_url(image)}})
+    messages = []
+    if (system_prompt or "").strip():
+        messages.append({"role": "system", "content": system_prompt.strip()})
+    messages.append({"role": "user", "content": content})
     payload: Dict[str, Any] = {
         "model": model.strip(),
-        "messages": [{"role": "user", "content": content}],
+        "messages": messages,
         "max_tokens": int(max_tokens),
         "temperature": max(0.0, float(temperature)),
         "top_p": max(0.0, min(1.0, float(top_p))),
         "seed": int(seed),
         "repetition_penalty": float(repetition_penalty),
     }
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key.strip() else {}
+    api_key_text = (api_key or "").strip()
+    headers = {"Authorization": f"Bearer {api_key_text}"} if api_key_text else {}
     response_payload = _request_json(_normalize_vllm_url(base_url), payload, timeout, headers=headers)
     text = _extract_text(response_payload)
     if not text:
@@ -211,7 +222,9 @@ def generate_with_backend(
     ollama_keep_alive: Any = -1,
     ollama_think: bool = False,
     vllm_api_key: str = "",
+    system_prompt: str = "",
 ) -> str:
+    system_text = (system_prompt or "").strip()
     normalized = (backend or "Local").strip()
     if normalized == "Ollama":
         return _generate_ollama(
@@ -227,6 +240,7 @@ def generate_with_backend(
             timeout=timeout,
             keep_alive=ollama_keep_alive,
             think=ollama_think,
+            system_prompt=system_text,
         )
     if normalized == "vLLM":
         return _generate_vllm(
@@ -241,6 +255,7 @@ def generate_with_backend(
             seed=seed,
             timeout=timeout,
             api_key=vllm_api_key,
+            system_prompt=system_text,
         )
 
     if normalized != "Local":
@@ -257,6 +272,7 @@ def generate_with_backend(
                 attention_backend=local_attention_backend,
                 images=images,
                 text_prompt=prompt,
+                system_prompt=system_text,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,
@@ -268,7 +284,10 @@ def generate_with_backend(
                 variant=model,
                 device=local_device,
                 attention_backend=local_attention_backend,
-                messages=[{"role": "user", "content": prompt}],
+                messages=(
+                    ([{"role": "system", "content": system_text}] if system_text else [])
+                    + [{"role": "user", "content": prompt}]
+                ),
                 max_tokens=max_tokens,
                 temperature=temperature,
                 top_p=top_p,

@@ -796,7 +796,9 @@ def apply_vl_chat_template(processor, conversation) -> str:
 def _strip_thinking_content(text: str) -> str:
     if not text:
         return text
-    text = re.sub(r"<think>[\\s\\S]*?</think>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<think>[\s\S]*?(?:</think>|$)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<(?:analysis|reasoning)>[\s\S]*?(?:</(?:analysis|reasoning)>|$)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\|(?:think|analysis|reasoning)\|>[\s\S]*?(?:<\|/?(?:think|analysis|reasoning)\|>|$)", "", text, flags=re.IGNORECASE)
     return text.strip()
 
 
@@ -1162,6 +1164,7 @@ def generate_vision_text(
     top_p: float,
     repetition_penalty: float,
     seed: int,
+    system_prompt: str = "",
 ) -> str:
     """生成视觉文本，优化推理速度"""
     torch.manual_seed(seed)
@@ -1179,10 +1182,23 @@ def generate_vision_text(
     # 构建对话
     content = [{"type": "image", "image": img} for img in images]
     content.append({"type": "text", "text": text_prompt})
-    conversation = [{"role": "user", "content": content}]
+    conversation = []
+    if (system_prompt or "").strip():
+        conversation.append({"role": "system", "content": system_prompt.strip()})
+    conversation.append({"role": "user", "content": content})
     
-    # 应用chat template
-    chat = apply_vl_chat_template(processor, conversation)
+    # Some older VL templates reject a system role. Preserve the instruction
+    # as a user text item only for that compatibility fallback.
+    try:
+        chat = apply_vl_chat_template(processor, conversation)
+    except Exception as exc:
+        if not (system_prompt or "").strip():
+            raise
+        fallback_content = [{"type": "text", "text": system_prompt.strip()}] + content
+        try:
+            chat = apply_vl_chat_template(processor, [{"role": "user", "content": fallback_content}])
+        except Exception:
+            raise exc
     
     # 处理输入
     processed = processor(text=chat, images=images, return_tensors="pt")

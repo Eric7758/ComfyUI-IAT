@@ -420,13 +420,15 @@ class BackendRequestTests(unittest.TestCase):
             timeout=10,
             keep_alive=-1,
             think=False,
+            system_prompt="只输出一条中文提示词",
         )
         self.assertEqual(output, "生成提示词")
         payload = request_json.call_args.args[1]
         self.assertEqual(payload["model"], "qwen3.5:122b")
         self.assertEqual(payload["options"]["seed"], 7)
         self.assertEqual(payload["keep_alive"], -1)
-        self.assertIn("images", payload["messages"][0])
+        self.assertEqual(payload["messages"][0], {"role": "system", "content": "只输出一条中文提示词"})
+        self.assertIn("images", payload["messages"][1])
 
     @patch("py.nodes.llm_backends._request_json")
     def test_vllm_payload_is_openai_compatible(self, request_json):
@@ -443,13 +445,15 @@ class BackendRequestTests(unittest.TestCase):
             seed=9,
             timeout=10,
             api_key="",
+            system_prompt="Output one plain prompt",
         )
         self.assertEqual(output, "prompt")
         url = request_json.call_args.args[0]
         payload = request_json.call_args.args[1]
         self.assertEqual(url, "http://127.0.0.1:8000/v1/chat/completions")
         self.assertEqual(payload["seed"], 9)
-        self.assertEqual(payload["messages"][0]["content"], "generate")
+        self.assertEqual(payload["messages"][0], {"role": "system", "content": "Output one plain prompt"})
+        self.assertEqual(payload["messages"][1]["content"], "generate")
 
     @patch("py.nodes.llm_backends._request_json")
     def test_remote_backends_send_all_reference_images(self, request_json):
@@ -505,6 +509,62 @@ class NodeBehaviorTests(unittest.TestCase):
         required = generator.INPUT_TYPES()["required"]
         self.assertIn("exploration_strength", required)
         self.assertIn("variation_seed", required)
+
+    def test_prompt_sanitizer_extracts_plain_prompt_from_model_wrappers(self):
+        from py.nodes.qwen35_dataset_rag_nodes import _sanitize_prompt
+
+        wrapped = """越野风格CMF设计，Flux.2 Klein 9B 训练集提示词工程师
+**正向提示词：** **text
+座椅主面使用棕色麂皮，黑色织物中控台，trigger_a"
+解释：这是一个示例"""
+        self.assertEqual(
+            _sanitize_prompt(wrapped),
+            "座椅主面使用棕色麂皮，黑色织物中控台，trigger_a",
+        )
+        self.assertEqual(
+            _sanitize_prompt('<think>内部推理</think>```text\n{"prompt":"中文提示词"}\n```'),
+            "中文提示词",
+        )
+        self.assertEqual(
+            _sanitize_prompt('Here is the positive prompt:\n```json\n{"prompt":"越野内饰提示词"}\n```'),
+            "越野内饰提示词",
+        )
+        self.assertEqual(_sanitize_prompt('```text 座椅麂皮```'), "座椅麂皮")
+        self.assertEqual(_sanitize_prompt('```A high-angle interior shot```'), "A high-angle interior shot")
+        self.assertEqual(_sanitize_prompt("**positive prompt:** **text\nx"), "x")
+        self.assertEqual(_sanitize_prompt("提示词内容 Explanation: 这是解释"), "提示词内容")
+        self.assertEqual(_sanitize_prompt("<think>未闭合的推理"), "")
+
+    def test_generation_instruction_and_system_prompt_enforce_dataset_language(self):
+        from py.nodes.dataset_repository import DatasetEntry, DatasetRecord
+        from py.nodes.qwen35_dataset_rag_nodes import (
+            _build_generation_instruction,
+            _build_generation_system_instruction,
+        )
+
+        record = DatasetRecord(
+            dataset_name="dataset_A",
+            version="1.0",
+            base_model="Flux.2 Klein 9B",
+            lora_name="model_A",
+            language="zh",
+            trigger_words=["trigger_a"],
+            entries=[DatasetEntry("0001", "棕色麂皮座椅")],
+            source_path=Path("dataset.json"),
+        )
+        instruction = _build_generation_instruction(
+            record=record,
+            user_prompt="越野风格 CMF",
+            retrieved=[{"rank": 1, "caption": "棕色麂皮座椅"}],
+            language="zh",
+            custom_instruction="",
+            preserve_reference_color=False,
+        )
+        system = _build_generation_system_instruction("zh")
+        self.assertIn("输出语言：中文", instruction)
+        self.assertIn("只输出一条最终可用于生图的提示词正文", system)
+        self.assertIn("禁止输出", system)
+        self.assertNotIn("你是 Flux.2 Klein 9B LoRA 训练集提示词工程师", instruction)
 
     def test_variation_plan_is_reproducible_and_keeps_hard_family_hex_pairs(self):
         from py.nodes.qwen35_dataset_rag_nodes import _build_variation_plan
@@ -584,6 +644,7 @@ class NodeBehaviorTests(unittest.TestCase):
         self.assertEqual(generate.call_count, 2)
         self.assertEqual(generate.call_args.kwargs["temperature"], 0.35)
         self.assertEqual(generate.call_args.kwargs["seed"], debug["generation_seed"])
+        self.assertIn("只输出一条最终可用于生图的提示词正文", generate.call_args.kwargs["system_prompt"])
 
         variation_kwargs = dict(kwargs)
         variation_kwargs["variation_seed"] = 10
