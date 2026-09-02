@@ -1,9 +1,23 @@
 # Usage Guide
 
+> 中文速览（精简版）
+>
+> - 节点分类不变：`IAT/Qwen3.5`、`IAT/Vision API`、`IAT/Image`、`IAT/Input`。
+> - Dataset 功能已拆分为 `Dataset Caption Picker` 与 `Dataset RAG Prompt Generator`。
+> - 反推接口优先级：节点输入 > `config.yaml` 对应 provider > 环境变量。
+> - 文本与视觉节点仅支持官方原版 `model_variant`。
+> - 模型下载目录固定为 `ComfyUI/models/diffusion_models`。
+> - 下载源顺序固定为 `ModelScope -> HuggingFace`。
+> - `runtime.offline_only: true` 时会完全跳过下载；本地模型即使校验不完整，也会继续尝试加载，直到实际加载时报错。
+
 ## Table of Contents
 - [Node Overview](#node-overview)
+- [Image Color Palette Extractor](#image-color-palette-extractor)
+- [Model Variants](#model-variants)
 - [Qwen3.5 Prompt Enhancer](#qwen35-prompt-enhancer)
 - [Qwen3.5 Reverse Prompt](#qwen35-reverse-prompt)
+- [Dataset Nodes](#dataset-nodes)
+- [Vision API Reverse Prompt](#vision-api-reverse-prompt)
 - [Qwen Translator](#qwen-translator)
 - [Qwen Kontext Translator](#qwen-kontext-translator)
 - [Best Practices](#best-practices)
@@ -11,14 +25,64 @@
 
 ## Node Overview
 
-ComfyUI-IAT provides 4 powerful nodes for text and image processing:
+ComfyUI-IAT provides 9 nodes for text and image processing:
 
 | Node | Category | Purpose |
 |------|----------|---------|
 | Qwen3.5 Prompt Enhancer | IAT/Qwen3.5 | Enhance and optimize text prompts |
 | Qwen3.5 Reverse Prompt | IAT/Qwen3.5 | Generate prompts from images |
+| Dataset Caption Picker | IAT/Dataset | Deterministically select one original training caption |
+| Dataset RAG Prompt Generator | IAT/Dataset | Retrieve paired training examples and generate one prompt |
+| Vision API Reverse Prompt | IAT/Vision API | Generate prompts from images via OpenAI-compatible APIs, Gemini, and Qwen-compatible providers |
 | Qwen Translator | IAT/Qwen3.5 | Translate text to English |
 | Qwen Kontext Translator | IAT/Qwen3.5 | Optimize editing instructions |
+| Image Color Palette Extractor | IAT/Image | Extract dominant colors and render a ratio-based palette chart |
+
+## Image Color Palette Extractor
+
+### Purpose
+Extract dominant colors from one or more input images and output a vertical palette chart whose bar widths follow color ratio.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| image | IMAGE | required | Input image or image batch |
+| num_colors | Int | 6 | Number of dominant colors to extract (2-20) |
+| output_width | Int | 1000 | Output palette width |
+| output_height | Int | 400 | Output palette height |
+| min_ratio | Float | 0.01 | Ignore colors whose ratio is below this threshold |
+| sort_order | Dropdown | ratio_desc | `ratio_desc` / `ratio_asc` / `lightness` |
+
+### Outputs
+
+| Output | Type | Description |
+|--------|------|-------------|
+| palette_image | IMAGE | Palette bar image (batch-aware) |
+| color_info | STRING | Color details with HEX/RGB/ratio; batched outputs are separated by `Image N` blocks |
+
+### Example Workflow
+
+```
+Load Image → Image Color Palette Extractor by IAT → Save Image
+                                  ↓
+                              Show Text
+```
+
+## Model Variants
+
+Available `model_variant` values:
+- `Qwen3.5-0.8B`
+- `Qwen3.5-2B`
+- `Qwen3.5-4B`
+- `Qwen3.5-9B`
+- `Qwen3.5-27B`
+- `Qwen3.6-35B-A3B`
+
+Runtime behavior:
+- Backend: Transformers (official model path only)
+- Download path: `ComfyUI/models/diffusion_models`
+- Download order: ModelScope first, HuggingFace fallback
 
 ## Qwen3.5 Prompt Enhancer
 
@@ -29,9 +93,8 @@ Transform simple prompts into detailed, professional-grade image generation prom
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| model_variant | Dropdown | Qwen3.5-Latest | Model size to use |
-| quantization | Dropdown | None | Quantization mode |
-| device | Dropdown | auto | Computing device |
+| model_variant | Dropdown | Official model list | Select official model variant |
+| device | Dropdown | cuda | Computing device |
 | prompt_text | String | "" | Input prompt to enhance |
 | enhancement_style | Dropdown | Enhance | Enhancement style |
 | custom_system_prompt | String | "" | Custom system prompt |
@@ -89,9 +152,8 @@ Generate text prompts from input images using vision-language models.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| model_variant | Dropdown | Qwen3.5-VL-Latest | Vision model size |
-| quantization | Dropdown | None | Quantization mode |
-| device | Dropdown | auto | Computing device |
+| model_variant | Dropdown | Official model list | Select official VL variant |
+| device | Dropdown | cuda | Computing device |
 | preset_prompt | Dropdown | Detailed Description | Analysis style |
 | custom_prompt | String | "" | Custom analysis prompt |
 | max_tokens | Int | 192 | Maximum output length |
@@ -127,6 +189,109 @@ Generate text prompts from input images using vision-language models.
             [CLIP Text Encode] → [KSampler] → [Save Image]
 ```
 
+## Dataset Nodes
+
+### Purpose
+Use the two Dataset nodes with an external offline dataset. Text is required;
+reference image is optional and can be used for structure-aware retrieval.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| user_prompt | String | required | User requirements and hard constraints |
+| dataset_name | Dropdown | first dataset | Dataset directory under `datasets.root` |
+| backend | Dropdown | Ollama | `Ollama`, `vLLM`, or in-process `Local` |
+| model_override | String | config default | Backend-specific model name |
+| base_url_override | String | config default | Backend endpoint override |
+| retrieval_seed | Int | 1 | Reproducible retrieval seed within the relevant candidate pool |
+| generation_seed | Int | 1 | Reproducible backend generation seed |
+| exploration_strength | Dropdown | Medium | `Mild`, `Medium`, or `Strong`; controls retrieval diversity and composition variation |
+| variation_seed | Int | 1 | Reproducible CMF component/color/material combination seed |
+| top_k | Int | 4 | Final MMR-selected captions, 1-8 |
+| preserve_reference_color | Boolean | False | Use RGB instead of grayscale reference image |
+| custom_instruction | String | "" | Extra generation instruction |
+| max_tokens | Int | 512 | Maximum generated prompt length |
+| temperature | Float | 0.0 | `0.0` uses the exploration mapping; positive values override it |
+| top_p | Float | 1.0 | Nucleus sampling parameter |
+| repetition_penalty | Float | 1.05 | Repetition penalty passed to the backend |
+| timeout_seconds | Int | 300 | Backend request timeout |
+| image | IMAGE | optional | Reference image 1 |
+| image_2 | IMAGE | optional | Reference image 2 |
+| image_3 | IMAGE | optional | Reference image 3 |
+| image_4 | IMAGE | optional | Reference image 4 |
+
+### Notes
+
+- `Dataset Caption Picker` does not load a model and uses `random.Random(seed)` for reproducible sampling.
+- `Dataset RAG Prompt Generator` combines Chinese BM25/character n-gram retrieval with an optional local Chinese CLIP index.
+- Exploration is deterministic: the same backend, model, dataset fingerprint/version, prompt, and seeds produce the same retrieval/composition inputs. Change `retrieval_seed` to explore nearby training examples, `variation_seed` to explore CMF combinations, or `generation_seed` to vary only backend sampling.
+- `temperature=0` means automatic exploration temperature: `Mild=0.15`, `Medium=0.35`, `Strong=0.55`. Set a positive temperature to override the mapped value.
+- User-specified color families are hard constraints. Color names and HEX values may be varied, and the plan may create new component/color/material combinations. The final prompt is repaired to include any requested color family omitted by the backend.
+- Multi-view datasets group the same filename stem across `control1`, `control2`, `control3`, and `result`; one `result/<stem>.txt` caption represents the group.
+- The generator accepts up to four reference images. A batched IMAGE input is expanded into individual images and sent together to the selected backend.
+- The index cache is automatically rebuilt when `dataset.json`, image files, or captions change.
+- `retrieval_debug` includes the hybrid weights, candidate pool scores/tie-breakers, selected ranks, MMR profile, image counts, and index version for diagnosing relevance versus exploration.
+- Local generation reuses the existing Transformers cache. Ollama uses native `/api/chat`; vLLM uses `/v1/chat/completions`.
+- The default configuration is fully offline and points at local Ollama `qwen3.5:122b`.
+- The node returns the final prompt, retrieved captions, retrieval scores/debug JSON, and dataset metadata.
+
+### Example Workflow
+
+```
+[Text Input] + [Load Image optional] → [Dataset RAG Prompt Generator]
+                                      ↓
+                              [CLIP Text Encode] → [KSampler] → [Save Image]
+```
+
+For direct caption inspection:
+
+```text
+[Dataset Caption Picker] → [Show Text]
+```
+
+## Vision API Reverse Prompt
+
+### Purpose
+Generate text prompts from input images using multiple vision APIs.
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| provider | Dropdown | OpenAI-Compatible | Upstream API provider |
+| model | String | gpt-4.1-mini | Provider-specific model name |
+| api_key | String | "" | API key override; leave empty to use the matching provider config/env |
+| base_url | String | https://api.openai.com/v1 | Provider API base URL |
+| preset_prompt | Dropdown | Detailed Description | Analysis style |
+| custom_prompt | String | "" | Custom analysis prompt |
+| image_detail | Dropdown | auto | Vision detail level |
+| max_tokens | Int | 192 | Maximum output length |
+| temperature | Float | 0.2 | Creativity (0.0-2.0) |
+| top_p | Float | 1.0 | Nucleus sampling |
+| timeout_seconds | Int | 60 | HTTP timeout |
+| image | IMAGE | optional | Primary image |
+| image_2 | IMAGE | optional | Second image |
+| image_3 | IMAGE | optional | Third image |
+| image_4 | IMAGE | optional | Fourth image |
+
+### Features
+
+- **Multi-provider** - Supports `OpenAI-Compatible`, `Gemini`, and `Qwen OpenAI-Compatible`
+- **Preset parity** - Reuses the same reverse prompt presets as the local Qwen node
+- **Flexible auth** - Resolution order is node input -> matching provider section in `config.yaml` -> that provider's environment variable
+- **Multi-image input** - Supports up to 4 input images
+- **Actionable errors** - Returns clearer reasons for invalid API key, insufficient balance, invalid URL, timeout, rate limiting, and upstream failures
+- **Model refresh** - Use `refresh_models` to query `/models` with the current `api_key` and `base_url`, then select from `available_models`
+
+### Example Workflow
+
+```
+[Load Image] → [Vision API Reverse Prompt] → [Show Text]
+                    ↓
+            [CLIP Text Encode] → [KSampler] → [Save Image]
+```
+
 ## Qwen Translator
 
 ### Purpose
@@ -137,9 +302,8 @@ Automatically translate Chinese or Japanese text to natural English.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | text | String | "" | Text to translate |
-| model_variant | Dropdown | Qwen3.5-Latest | Model size |
-| quantization | Dropdown | None | Quantization mode |
-| device | Dropdown | auto | Computing device |
+| model_variant | Dropdown | Official model list | Select official model variant |
+| device | Dropdown | cuda | Computing device |
 | max_tokens | Int | 512 | Maximum output length |
 | temperature | Float | 0.1 | Low for accuracy |
 | keep_model_loaded | Boolean | True | Keep model in memory |
@@ -177,9 +341,8 @@ Optimize editing instructions for image editing models (especially Kontext-based
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | text | String | "" | Editing instruction |
-| model_variant | Dropdown | Qwen3.5-Latest | Model size |
-| quantization | Dropdown | None | Quantization mode |
-| device | Dropdown | auto | Computing device |
+| model_variant | Dropdown | Official model list | Select official model variant |
+| device | Dropdown | cuda | Computing device |
 | max_tokens | Int | 512 | Maximum output length |
 | temperature | Float | 0.0 | Low for consistency |
 | keep_model_loaded | Boolean | True | Keep model in memory |
@@ -215,12 +378,12 @@ natural distribution, complementary colors"
 
 ### Model Selection
 
-| VRAM Available | Recommended Model | Quantization |
-|----------------|-------------------|--------------|
-| 8GB | Qwen3.5-3B | 4-bit |
-| 12GB | Qwen3.5-7B | 8-bit |
-| 16GB+ | Qwen3.5-7B/14B | None |
-| 24GB+ | Qwen3.5-14B/32B | None |
+| VRAM Available | Recommended model_variant |
+|----------------|---------------------------|
+| 8GB | `Qwen3.5-0.8B` |
+| 12GB | `Qwen3.5-2B` |
+| 16GB+ | `Qwen3.5-4B` / `Qwen3.5-9B` |
+| 24GB+ | `Qwen3.5-9B` / `Qwen3.5-27B` |
 
 ### Temperature Guidelines
 
@@ -294,6 +457,6 @@ natural distribution, complementary colors"
 
 1. **First load is slow** - Model downloads and loads on first use
 2. **Subsequent uses are fast** - Keep models loaded when possible
-3. **Use quantization** - Significantly reduces VRAM usage
+3. **Use a smaller official variant** - Choose a model size that matches your VRAM
 4. **Batch when possible** - Process multiple items in one session
 5. **Monitor VRAM** - Use system monitor to track memory usage

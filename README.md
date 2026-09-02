@@ -2,7 +2,7 @@
 
 # 🎨 ComfyUI-IAT
 
-**Image & Text utilities with Qwen3.5 translator and prompt optimizer for ComfyUI**
+**ComfyUI-IAT v2.0: stable Qwen3.5 text/image utilities for production workflows**
 
 [![GitHub stars](https://img.shields.io/github/stars/Eric7758/ComfyUI-IAT?style=flat-square)](https://github.com/Eric7758/ComfyUI-IAT/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/Eric7758/ComfyUI-IAT?style=flat-square)](https://github.com/Eric7758/ComfyUI-IAT/network)
@@ -20,6 +20,14 @@
 
 ## <a name="english"></a> 🇺🇸 English
 
+### 📌 v2.0 at a glance
+
+- Local Transformers plus resident Ollama/vLLM backends (`qwen3.5:122b` supported)
+- Fixed model directory: `ComfyUI/models/diffusion_models`
+- Download strategy: `ModelScope -> HuggingFace`
+- No runtime auto-upgrade for dependencies
+- Clear production error codes (`E1001`, `E2001`, `E2003`, `E2004`, `E5001`)
+
 ### ✨ Features
 
 ComfyUI-IAT provides powerful AI-driven text and image processing nodes for ComfyUI workflows:
@@ -28,9 +36,13 @@ ComfyUI-IAT provides powerful AI-driven text and image processing nodes for Comf
 |------|----------|-------------|
 | 📝 **Qwen3.5 Prompt Enhancer** | Prompt Optimization | Enhance your prompts with vivid details and professional quality |
 | 🔍 **Qwen3.5 Reverse Prompt** | Image-to-Text | Generate prompts from images using vision-language models |
+| 🎲 **Dataset Caption Picker** | Dataset Sampling | Select one reproducible original training caption |
+| 🧠 **Dataset RAG Prompt Generator** | Dataset-Aware Prompting | Retrieve paired training examples and generate one prompt |
+| 🤖 **Vision API Reverse Prompt** | Image-to-Text | Generate prompts from images through OpenAI-compatible APIs, Gemini, and other vision providers |
 | 🌐 **Qwen Translator** | Translation | Translate Chinese/Japanese to natural English |
 | ✏️ **Qwen Kontext Translator** | Editing Optimization | Optimize editing instructions for image editing models |
 | 🖼️ **Output Browser** | Media Library | Browse nested output folders and drag workflow-bearing images/videos onto the canvas |
+| 🎨 **Image Color Palette Extractor** | Color Analysis | Extract dominant colors and generate a ratio-based palette image |
 
 ### 🚀 Quick Start
 
@@ -53,7 +65,7 @@ git clone https://github.com/Eric7758/ComfyUI-IAT.git
 
 # Install dependencies
 cd ComfyUI-IAT
-pip install -r requirements.txt
+python install.py
 ```
 
 **Method 3: Using Install Scripts**
@@ -72,12 +84,71 @@ Edit `config.yaml` to customize default settings:
 
 ```yaml
 model:
-  default_variant: "Qwen3.5-4B"    # Default model variant (0.8B/2B/4B/9B/27B)
-  quantization: "None (FP16/BF16)"   # Quantization mode
-  device: "auto"                      # Device: auto, cuda, cpu
+  default_variant: "Qwen3.5-2B"      # Default model variant
+  device: "cuda"                      # Device: cuda, cpu
+
+runtime:
+  default_attention_backend: "SDPA"  # SDPA / FlashAttention-2 / Eager
+  prefer_optimized_attention: true    # Try FlashAttention2/SDPA first, then fall back automatically
+  enable_torch_compile: false         # Conservative default; enable only if your torch/cuda stack is stable
+  offline_only: true                  # Fully offline default
+
+datasets:
+  root: "../IAT-datasets"
+  embedding_model_path: "models/embeddings/chinese-clip-vit-base-patch16"
+  embedding_device: "cpu"             # cpu / cuda / auto
+  embedding_batch_size: 16
+  index_cache_dir: ""
+
+llm:
+  default_backend: "Ollama"
+  default_model: "qwen3.5:122b"
+  timeout_seconds: 300
+
+ollama:
+  base_url: "http://127.0.0.1:11434"
+  model: "qwen3.5:122b"
+  keep_alive: -1
+  think: false
+
+vllm:
+  base_url: "http://127.0.0.1:8000/v1"
+  model: "qwen3.5:122b"
+  api_key: ""
+
+openai:
+  base_url: "https://api.openai.com/v1"  # OpenAI or compatible endpoint base URL
+  model: "gpt-4.1-mini"                  # Default model for OpenAI-compatible reverse prompt requests
+  api_key: ""                            # Optional. Prefer OPENAI_API_KEY env var
+  api_key_env: "OPENAI_API_KEY"         # Environment variable name used when api_key is empty
+  timeout_seconds: 60                    # HTTP timeout for vision API requests
+  user_agent: "ComfyUI-IAT/2.0"         # Override only if your proxy requires a custom client signature
 
 logging:
   verbose: false                      # Enable verbose logging
+```
+
+For secrets such as API keys, you can write them directly into `config.yaml`:
+
+```yaml
+openai:
+  api_key: "sk-your-api-key"
+```
+
+Optional provider-specific sections:
+
+```yaml
+gemini:
+  base_url: "https://generativelanguage.googleapis.com/v1beta"
+  model: "gemini-2.5-flash"
+  api_key: ""
+  api_key_env: "GEMINI_API_KEY"
+
+qwen_compatible:
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "qwen-vl-plus"
+  api_key: ""
+  api_key_env: "DASHSCOPE_API_KEY"
 ```
 
 ### 📖 Usage
@@ -89,6 +160,20 @@ Open **Output Browser** from ComfyUI's left sidebar. Browse nested folders under
 canvas to let ComfyUI load its embedded workflow. Double-clicking a media card or
 using its import button performs the same action. The media file must contain
 workflow metadata supported by ComfyUI.
+Model selection now uses official `model_variant` entries only:
+- `Qwen3.5-0.8B`
+- `Qwen3.5-2B`
+- `Qwen3.5-4B`
+- `Qwen3.5-9B`
+- `Qwen3.5-27B`
+- `Qwen3.6-35B-A3B`
+
+Model download path and fallback are fixed:
+- Path: `ComfyUI/models/diffusion_models`
+- Source order: `ModelScope -> HuggingFace`
+
+For production troubleshooting with concise error codes and trace IDs, see:
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 
 #### 1. Prompt Enhancement
 
@@ -125,10 +210,22 @@ Use **Qwen3.5 Reverse Prompt** to generate prompts from images:
 Use **Qwen Translator** for automatic translation:
 
 - Auto-detects Chinese/Japanese
-- Translates to natural English
+- Can translate to natural English or Chinese
 - Optimized for image generation prompts
 
-#### 4. Editing Optimization
+#### 4. Vision API Reverse Prompt
+
+Use **Vision API Reverse Prompt** to generate prompts through multiple vision APIs:
+
+- Upload 1-4 images
+- Reuse the same reverse prompt presets as the local Qwen node
+- Supported providers: `OpenAI-Compatible`, `Gemini`, `Qwen OpenAI-Compatible`
+- The node now explains that leaving `api_key` blank will fall back to the matching provider section in `config.yaml`, then that provider's environment variable
+- API failures now return clearer reasons such as invalid API key, insufficient balance, invalid URL, timeout, rate limit, and upstream unavailability
+- After editing `api_key` / `base_url`, click `refresh_models` to query the provider's `/models` endpoint and select a model from `available_models`
+- Supports custom `base_url` for compatible API gateways
+
+#### 5. Editing Optimization
 
 Use **Qwen Kontext Translator** for image editing:
 
@@ -141,7 +238,7 @@ Use **Qwen Kontext Translator** for image editing:
 - Python 3.8+
 - ComfyUI
 - PyTorch 2.0+
-- Transformers 4.57.0+
+- Transformers 5.2.0+ (if your build lacks `qwen3_5`, runtime raises `E5001` with a manual fix command)
 - 4GB+ VRAM (8GB+ recommended)
 
 ### 📦 Model Support
@@ -150,43 +247,14 @@ Use **Qwen Kontext Translator** for image editing:
 
 All Qwen3.5 models support **text + image + video** input with **text** output:
 
-**Small Models (4-8GB VRAM):**
-| Model | Size | VRAM (FP16) | VRAM (4-bit) | Best For |
-|-------|------|-------------|--------------|----------|
-| Qwen3.5-0.8B | ~0.9B | ~2GB | ~1GB | Fast inference, low memory |
-| Qwen3.5-2B | ~2B | ~5GB | ~2GB | Balanced speed/quality |
-| Qwen3.5-4B | ~5B | ~10GB | ~3GB | Good quality on mid-range GPUs |
-
-**Medium Models (8-16GB VRAM):**
-| Model | Size | VRAM (FP16) | VRAM (4-bit) | Best For |
-|-------|------|-------------|--------------|----------|
-| Qwen3.5-9B | ~10B | ~20GB | ~6GB | High quality, recommended |
-
-**Large Models (16GB+ VRAM or GGUF):**
-| Model | Size | VRAM (FP16) | VRAM (4-bit) | Best For |
-|-------|------|-------------|--------------|----------|
-| Qwen3.5-27B | ~28B | ~56GB | ~16GB | Best quality, use GGUF for consumer GPUs |
-
-**Quantization Options:**
-- None (FP16/BF16) - Best quality
-- 8-bit - Reduced memory
-- 4-bit - Minimum memory
-
-**GGUF Support for Consumer GPUs:**
-
-For larger models (9B, 27B) on consumer GPUs, use GGUF quantized versions:
-
-| Quantization | 9B VRAM | 27B VRAM | Quality |
-|--------------|---------|----------|---------|
-| Q4_K_M | ~6GB | ~18GB | Good |
-| Q5_K_M | ~7GB | ~21GB | Better |
-| Q6_K | ~8GB | ~24GB | Best |
-| Q8_0 | ~10GB | ~30GB | Excellent |
-
-Recommended GGUF sources:
-- `bartowski/Qwen_Qwen3.5-9B-GGUF`
-- `bartowski/Qwen_Qwen3.5-27B-GGUF`
-- `unsloth/Qwen3.5-9B-GGUF`
+| Model | Size | VRAM (FP16/BF16) | Best For |
+|-------|------|------------------|----------|
+| Qwen3.5-0.8B | ~0.9B | ~2GB | Fast inference, lowest memory |
+| Qwen3.5-2B | ~2B | ~5GB | Balanced speed/quality |
+| Qwen3.5-4B | ~5B | ~10GB | Better quality on mid-range GPUs |
+| Qwen3.5-9B | ~10B | ~20GB | High quality |
+| Qwen3.5-27B | ~28B | ~56GB | Best quality |
+| Qwen3.6-35B-A3B | ~35B (A3B) | depends on hardware | Large-scale reasoning tasks |
 
 ### 📝 Changelog
 
@@ -204,6 +272,14 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file.
 
 ## <a name="中文"></a> 🇨🇳 中文
 
+### 📌 v2.0 核心说明
+
+- 支持本地 Transformers、Ollama 和 vLLM 后端（默认 Ollama `qwen3.5:122b`）
+- 模型目录固定为 `ComfyUI/models/diffusion_models`
+- 下载顺序固定为 `ModelScope -> HuggingFace`
+- 运行时不再自动升级依赖
+- 生产错误码统一（`E1001`、`E2001`、`E2003`、`E2004`、`E5001`）
+
 ### ✨ 功能特性
 
 ComfyUI-IAT 为 ComfyUI 工作流提供强大的 AI 驱动的文本和图像处理节点：
@@ -212,11 +288,17 @@ ComfyUI-IAT 为 ComfyUI 工作流提供强大的 AI 驱动的文本和图像处�
 |------|------|------|
 | 📝 **Qwen3.5 提示词增强器** | 提示词优化 | 用生动的细节和专业质量增强提示词 |
 | 🔍 **Qwen3.5 反推提示词** | 图像转文本 | 使用视觉语言模型从图像生成提示词 |
+| 🎲 **数据集提示词抽取器** | 数据集采样 | 可复现地抽取一条原始训练提示词 |
+| 🧠 **数据集RAG提示词生成器** | 数据集风格生成 | 检索图文训练样本并生成一条新提示词 |
+| 🤖 **Vision API 反推提示词** | 图像转文本 | 通过 OpenAI 兼容接口、Gemini 等视觉 API 从图像生成提示词 |
 | 🌐 **Qwen 翻译器** | 翻译 | 将中文/日文翻译成自然流畅的英文 |
 | ✏️ **Qwen 编辑提示词优化** | 编辑优化 | 为图像编辑模型优化编辑指令 |
 | 🖼️ **输出浏览器** | 媒体库 | 嵌套浏览 output 目录，并将含工作流的图片/视频拖入画布 |
+| 🎨 **图像主色调色板提取器** | 颜色分析 | 提取图片主色并输出按占比绘制的色条图 |
 
 ### 🚀 快速开始
+
+> 说明：当前版本的 `requirements.txt` 已包含完整运行依赖（含 `torch/numpy/Pillow`），用于减少不同 ComfyUI 环境下的缺包风险。
 
 #### 安装
 
@@ -237,7 +319,7 @@ git clone https://github.com/Eric7758/ComfyUI-IAT.git
 
 # 安装依赖
 cd ComfyUI-IAT
-pip install -r requirements.txt
+python install.py
 ```
 
 **方法 3：使用安装脚本**
@@ -256,12 +338,48 @@ bash install.sh
 
 ```yaml
 model:
-  default_variant: "Qwen3.5-4B"    # 默认模型版本 (0.8B/2B/4B/9B/27B)
-  quantization: "None (FP16/BF16)"   # 量化模式
-  device: "auto"                      # 设备: auto, cuda, cpu
+  default_variant: "Qwen3.5-2B"      # 默认模型版本
+  device: "cuda"                      # 设备: cuda, cpu
+
+runtime:
+  default_attention_backend: "SDPA"   # SDPA / FlashAttention-2 / Eager
+  prefer_optimized_attention: true    # 优先尝试 FlashAttention2/SDPA，失败时自动回退
+  enable_torch_compile: false         # 保守默认值；仅在 torch/cuda 环境稳定时开启
+  offline_only: true                  # 完全离线，仅尝试本地模型文件
+
+openai:
+  base_url: "https://api.openai.com/v1"  # OpenAI 或兼容接口根地址
+  model: "gpt-4.1-mini"                  # OpenAI 兼容反推请求的默认模型
+  api_key: ""                            # 可选。更推荐使用环境变量
+  api_key_env: "OPENAI_API_KEY"         # 当 api_key 为空时读取的环境变量名
+  timeout_seconds: 60                    # 视觉 API 请求超时时间（秒）
+  user_agent: "ComfyUI-IAT/2.0"         # 仅当代理网关要求自定义客户端标识时再修改
 
 logging:
   verbose: false                      # 启用详细日志
+```
+
+对于 API Key 这类信息，可以直接写入 `config.yaml`：
+
+```yaml
+openai:
+  api_key: "sk-your-api-key"
+```
+
+也可以按 provider 增加可选配置段：
+
+```yaml
+gemini:
+  base_url: "https://generativelanguage.googleapis.com/v1beta"
+  model: "gemini-2.5-flash"
+  api_key: ""
+  api_key_env: "GEMINI_API_KEY"
+
+qwen_compatible:
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "qwen-vl-plus"
+  api_key: ""
+  api_key_env: "DASHSCOPE_API_KEY"
 ```
 
 ### 📖 使用方法
@@ -272,6 +390,20 @@ logging:
 `ComfyUI/output` 下的文件夹，并支持搜索当前目录。将图片或视频拖到画布、
 双击媒体卡片，或点击导入按钮，都可以交给 ComfyUI 加载其中嵌入的工作流。
 媒体文件需要包含 ComfyUI 支持的工作流元数据。
+模型选择仅保留官方原版 `model_variant`：
+- `Qwen3.5-0.8B`
+- `Qwen3.5-2B`
+- `Qwen3.5-4B`
+- `Qwen3.5-9B`
+- `Qwen3.5-27B`
+- `Qwen3.6-35B-A3B`
+
+模型下载目录和顺序固定为：
+- 目录：`ComfyUI/models/diffusion_models`
+- 下载顺序：`ModelScope -> HuggingFace`
+
+生产排障与错误码说明见：
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 
 #### 1. 提示词增强
 
@@ -307,10 +439,22 @@ logging:
 使用 **Qwen 翻译器** 进行自动翻译：
 
 - 自动检测中文/日文
-- 翻译成自然流畅的英文
+- 可选择翻译为自然流畅的英文或中文
 - 针对图像生成提示词优化
 
-#### 4. 编辑优化
+#### 4. Vision API 反推提示词
+
+使用 **Vision API 反推提示词** 通过多种视觉 API 从图像生成提示词：
+
+- 上传 1-4 张图像
+- 复用与本地 Qwen 反推节点相同的预设提示词
+- 当前支持：`OpenAI-Compatible`、`Gemini`、`Qwen OpenAI-Compatible`
+- 节点中已提示：留空 `api_key` 时会优先回退到 `config.yaml` 中对应 provider 的配置，再回退到该 provider 的环境变量
+- API 调用失败时会尽量返回明确原因，例如无效 API Key、额度不足、无效 URL、超时、限流、上游不可用
+- 修改 `api_key` / `base_url` 后，可点击 `refresh_models` 查询该服务的 `/models` 并在 `available_models` 中选择
+- 支持自定义 `base_url`，方便接入兼容网关
+
+#### 5. 编辑优化
 
 使用 **Qwen 编辑提示词优化** 进行图像编辑：
 
@@ -323,7 +467,7 @@ logging:
 - Python 3.8+
 - ComfyUI
 - PyTorch 2.0+
-- Transformers 4.57.0+
+- Transformers 5.2.0+（若当前安装包不识别 `qwen3_5`，运行时会报 `E5001` 并给出手动修复命令）
 - 4GB+ 显存（建议 8GB+）
 
 ### 📦 模型支持
@@ -332,43 +476,14 @@ logging:
 
 所有 Qwen3.5 模型都支持**文本 + 图像 + 视频**输入，**文本**输出：
 
-**小型模型（4-8GB 显存）：**
-| 模型 | 参数量 | FP16显存 | 4-bit显存 | 适用场景 |
-|------|--------|----------|-----------|----------|
-| Qwen3.5-0.8B | ~0.9B | ~2GB | ~1GB | 快速推理、低内存 |
-| Qwen3.5-2B | ~2B | ~5GB | ~2GB | 速度与质量平衡 |
-| Qwen3.5-4B | ~5B | ~10GB | ~3GB | 中高端显卡良好质量 |
-
-**中型模型（8-16GB 显存）：**
-| 模型 | 参数量 | FP16显存 | 4-bit显存 | 适用场景 |
-|------|--------|----------|-----------|----------|
-| Qwen3.5-9B | ~10B | ~20GB | ~6GB | 高质量，推荐 |
-
-**大型模型（16GB+ 显存或GGUF）：**
-| 模型 | 参数量 | FP16显存 | 4-bit显存 | 适用场景 |
-|------|--------|----------|-----------|----------|
-| Qwen3.5-27B | ~28B | ~56GB | ~16GB | 最佳质量，消费级显卡建议用GGUF |
-
-**量化选项：**
-- None (FP16/BF16) - 最佳质量
-- 8-bit - 减少内存
-- 4-bit - 最小内存
-
-**消费级显卡GGUF支持：**
-
-对于消费级显卡运行大模型（9B、27B），建议使用GGUF量化版本：
-
-| 量化等级 | 9B显存 | 27B显存 | 质量 |
-|----------|--------|---------|------|
-| Q4_K_M | ~6GB | ~18GB | 良好 |
-| Q5_K_M | ~7GB | ~21GB | 更好 |
-| Q6_K | ~8GB | ~24GB | 最佳 |
-| Q8_0 | ~10GB | ~30GB | 优秀 |
-
-推荐GGUF源：
-- `bartowski/Qwen_Qwen3.5-9B-GGUF`
-- `bartowski/Qwen_Qwen3.5-27B-GGUF`
-- `unsloth/Qwen3.5-9B-GGUF`
+| 模型 | 参数量 | FP16/BF16 显存 | 适用场景 |
+|------|--------|----------------|----------|
+| Qwen3.5-0.8B | ~0.9B | ~2GB | 快速推理、最低内存 |
+| Qwen3.5-2B | ~2B | ~5GB | 速度与质量平衡 |
+| Qwen3.5-4B | ~5B | ~10GB | 中高端显卡更好质量 |
+| Qwen3.5-9B | ~10B | ~20GB | 高质量 |
+| Qwen3.5-27B | ~28B | ~56GB | 最佳质量 |
+| Qwen3.6-35B-A3B | ~35B (A3B) | 取决于硬件 | 大规模推理任务 |
 
 ### 📝 更新日志
 

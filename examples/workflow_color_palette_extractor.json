@@ -1,0 +1,96 @@
+{
+  "last_node_id": 3,
+  "last_link_id": 2,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [120, 220],
+      "size": [320, 330],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [1]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "widgets_values": [
+        "example.png",
+        "image"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "ImageColorPaletteExtractor by IAT",
+      "pos": [520, 220],
+      "size": [380, 360],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "palette_image",
+          "type": "IMAGE",
+          "links": [2]
+        },
+        {
+          "name": "color_info",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "widgets_values": [
+        6,
+        1000,
+        400,
+        0.01,
+        "ratio_desc"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "SaveImage",
+      "pos": [980, 220],
+      "size": [320, 270],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 2
+        }
+      ],
+      "outputs": [],
+      "widgets_values": [
+        "ComfyUI",
+        "%counter%_%date%_%time%"
+      ]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "IMAGE"],
+    [2, 2, 0, 3, 0, "IMAGE"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

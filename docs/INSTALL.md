@@ -1,5 +1,11 @@
 # Installation Guide
 
+> 中文速览（精简版）
+>
+> - 推荐环境：`Python 3.10+`、已安装 `ComfyUI`、NVIDIA GPU（可选）。
+> - 完整依赖见根目录 `requirements.txt`，其中包含 `torch/numpy/Pillow` 等基础依赖，适配更多 ComfyUI 环境。
+> - 首次安装后请重启 ComfyUI；若提示 `qwen3_5` 架构缺失，执行一次 `python install.py` 并重启。
+
 ## Table of Contents
 - [System Requirements](#system-requirements)
 - [Installation Methods](#installation-methods)
@@ -17,7 +23,7 @@
 ### Recommended Requirements
 - Python 3.10+
 - 16GB+ RAM
-- 16GB+ VRAM (for 7B+ models)
+- 16GB+ VRAM (for 9B+ models)
 - CUDA-capable GPU
 
 ## Installation Methods
@@ -44,7 +50,7 @@ git clone https://github.com/Eric7758/ComfyUI-IAT.git
 cd ComfyUI-IAT
 
 # Install dependencies
-pip install -r requirements.txt
+python install.py
 ```
 
 ### Method 3: Using Install Scripts
@@ -70,39 +76,104 @@ Edit `config.yaml` in the plugin root directory:
 
 ```yaml
 model:
-  default_variant: "Qwen3.5-Latest"
-  quantization: "None (FP16/BF16)"
-  device: "auto"
+  default_variant: "Qwen3.5-2B"
+  device: "cuda"
+
+runtime:
+  default_attention_backend: "SDPA"
+  prefer_optimized_attention: true
+  enable_torch_compile: false
+  offline_only: true
+
+datasets:
+  root: "../IAT-datasets"
+  embedding_model_path: "models/embeddings/chinese-clip-vit-base-patch16"
+  embedding_device: "cpu"  # cpu / cuda / auto
+  embedding_batch_size: 16
+  index_cache_dir: ""
+
+llm:
+  default_backend: "Ollama"
+  default_model: "qwen3.5:122b"
+  timeout_seconds: 300
+
+ollama:
+  base_url: "http://127.0.0.1:11434"
+  model: "qwen3.5:122b"
+  keep_alive: -1
+  think: false
+
+vllm:
+  base_url: "http://127.0.0.1:8000/v1"
+  model: "qwen3.5:122b"
+  api_key: ""
+
+openai:
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4.1-mini"
+  api_key: ""
+  api_key_env: "OPENAI_API_KEY"
+  timeout_seconds: 60
+  user_agent: "ComfyUI-IAT/2.0"
 
 logging:
   verbose: false
+```
+
+For secrets, you can write the API key directly into `config.yaml`:
+
+```yaml
+openai:
+  api_key: "sk-your-api-key"
+```
+
+Optional provider-specific sections:
+
+```yaml
+gemini:
+  base_url: "https://generativelanguage.googleapis.com/v1beta"
+  model: "gemini-2.5-flash"
+  api_key: ""
+  api_key_env: "GEMINI_API_KEY"
+
+qwen_compatible:
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "qwen-vl-plus"
+  api_key: ""
+  api_key_env: "DASHSCOPE_API_KEY"
 ```
 
 ### Configuration Options
 
 #### Model Variants
 - `Qwen3.5-0.8B` - Fastest, lowest quality
-- `Qwen3.5-3B` - Balanced speed/quality
-- `Qwen3.5-7B` - Good quality
-- `Qwen3.5-14B` - High quality
-- `Qwen3.5-32B` - Best quality
-- `Qwen3.5-Latest` - Auto-select latest
+- `Qwen3.5-2B` - Balanced speed/quality
+- `Qwen3.5-4B` - Good quality for mid-range GPUs
+- `Qwen3.5-9B` - High quality
+- `Qwen3.5-27B` - Best quality, requires large VRAM
+- `Qwen3.6-35B-A3B` - Large-scale reasoning, highest hardware requirement
 
-#### Quantization Options
-- `None (FP16/BF16)` - Best quality, highest VRAM
-- `8-bit` - Good quality, medium VRAM
-- `4-bit` - Acceptable quality, lowest VRAM
+#### Runtime Behavior
+- 仅支持官方原版模型路径（无量化/GGUF分支）。
+- 运行时不会自动升级依赖。
+- 若 transformers 不满足要求，将报 `E5001` 并给出手动修复命令。
 
 #### Device Options
-- `auto` - Automatically select best device
 - `cuda` - Use NVIDIA GPU
 - `cpu` - Use CPU (slower)
+
+#### Vision API Reverse Prompt Configuration
+- For `OpenAI-Compatible`, configure the `openai` section in `config.yaml`
+- For `Gemini`, you can add a `gemini` section with `base_url`, `model`, `api_key`, and `api_key_env`
+- For `Qwen OpenAI-Compatible`, you can add a `qwen_compatible` section with `base_url`, `model`, `api_key`, and `api_key_env`
+- If the matching provider section and node input are both empty, the node falls back to that provider's environment variable
+- Override `openai.user_agent` only if your proxy/WAF requires a custom client signature
 
 ### First Run
 
 On first use, the plugin will automatically download required models to:
 ```
-ComfyUI/models/LLM/
+ComfyUI/models/diffusion_models/
 ```
 
 Download sources (in order):
@@ -116,14 +187,21 @@ Download sources (in order):
 #### Issue: "Module not found" error
 **Solution:**
 ```bash
-pip install -r requirements.txt
+python install.py
 ```
+
+#### Issue: `model type 'qwen3_5' but Transformers does not recognize this architecture`
+**Solution:**
+```bash
+python -m pip install --upgrade "transformers>=5.2.0"
+```
+Then restart ComfyUI and run the node again.
 
 #### Issue: "CUDA out of memory"
 **Solutions:**
-1. Use smaller model variant (e.g., 0.8B or 3B)
-2. Enable quantization (8-bit or 4-bit)
-3. Close other GPU-intensive applications
+1. Use smaller model variant (e.g., 0.8B or 2B)
+2. Close other GPU-intensive applications
+3. Reduce `max_tokens`
 
 #### Issue: Model download fails
 **Solutions:**
@@ -134,8 +212,8 @@ pip install -r requirements.txt
 #### Issue: Slow generation
 **Solutions:**
 1. Use smaller model variant
-2. Enable quantization
-3. Check GPU utilization
+2. Check GPU utilization
+3. Keep model loaded for repeated runs (`keep_model_loaded = True`)
 4. Reduce max_tokens parameter
 
 ### Getting Help

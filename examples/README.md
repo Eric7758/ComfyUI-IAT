@@ -80,6 +80,28 @@ Load Image → Qwen3.5 Reverse Prompt → Show Text (Generated Prompt)
 
 ---
 
+### 4. Color Palette Extractor (`workflow_color_palette_extractor.json`)
+
+**Purpose**: Demonstrates dominant color extraction and palette image generation.
+
+**Workflow**:
+```
+Load Image → Image Color Palette Extractor by IAT → Save Image
+```
+
+**Features**:
+- Dominant color extraction with configurable count
+- Ratio-based vertical palette rendering
+- Optional color ratio text output (`color_info`)
+
+**How to use**:
+1. Load the workflow
+2. Select an input image in the `Load Image` node
+3. Adjust `num_colors`, `min_ratio`, and `sort_order`
+4. Run the workflow to generate the palette image
+
+---
+
 ## Loading Workflows
 
 ### Method 1: Drag and Drop

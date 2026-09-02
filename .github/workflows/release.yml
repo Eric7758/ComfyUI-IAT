@@ -35,9 +35,18 @@ jobs:
         draft: false
         prerelease: false
         body: |
-          ## Changes in this Release
-          
-          See [UPDATE.md](UPDATE.md) for detailed changelog.
+          ## ComfyUI-IAT Release
+
+          ### Highlights
+          - Official Qwen model path only
+          - Fixed model directory: `ComfyUI/models/diffusion_models`
+          - Download order: `ModelScope -> HuggingFace`
+          - No runtime dependency auto-upgrade
+          - Production error codes with trace IDs
+
+          ### Notes
+          - See `UPDATE.md` for full changelog.
+          - For v2.0.0 detailed release notes, see `.github/release-v2.0.0.md`.
     
     - name: Upload Release Assets
       uses: actions/upload-release-asset@v1

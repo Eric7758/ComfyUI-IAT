@@ -208,3 +208,12 @@ __marimo__/
 
 # Local temp work
 .tmp/
+
+# Local WIP backup area (not synced until validated)
+backup/
+.codex
+
+# Track only prompt KB docs/example; ignore local dataset payloads
+datasets/prompts_kb/*
+!datasets/prompts_kb/README.md
+!datasets/prompts_kb/example_dataset.json

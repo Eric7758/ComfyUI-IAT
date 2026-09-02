@@ -1,16 +1,18 @@
 [project]
 name = "comfyui-iat"
-description = "ComfyUI-IAT: Image & Text utilities with Qwen translator and prompt optimizer."
-version = "1.0.0"
+description = "ComfyUI-IAT v2.0: stable Qwen3.5/3.6 text-image utilities for ComfyUI production workflows."
+version = "2.0.0"
 license = { text = "MIT" }
 dependencies = [
-  "transformers>=4.57.0",
+  "transformers>=5.2.0",
   "torch>=2.0.0",
   "Pillow>=9.0.0",
+  "imageio-ffmpeg>=0.5.1",
   "numpy>=1.21.0",
   "PyYAML>=6.0",
   "packaging>=24.0",
   "modelscope>=1.18.0",
+  "huggingface_hub>=0.24.0",
 ]
 
 [tool.comfy]
