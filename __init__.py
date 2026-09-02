@@ -15,8 +15,9 @@ __version__ = "1.1.0"
 
 NODE_CLASS_MAPPINGS: dict = {}
 NODE_DISPLAY_NAME_MAPPINGS: dict = {}
+WEB_DIRECTORY = "./web"
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "__version__"]
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY", "__version__"]
 
 cwd = os.path.dirname(os.path.realpath(__file__))
 
@@ -61,6 +62,11 @@ for module_path in node_modules:
             print(f"[IAT] Loaded module: {module_path}")
     except Exception as e:
         print(f"[IAT] ERROR: Failed to load {module_path}: {e}")
+
+try:
+    importlib.import_module(".py.output_browser", package=__name__)
+except Exception as e:
+    print(f"[IAT] ERROR: Failed to load output browser: {e}")
 
 node_count = len(NODE_CLASS_MAPPINGS)
 if node_count > 0:
