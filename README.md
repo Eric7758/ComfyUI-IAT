@@ -41,6 +41,7 @@ ComfyUI-IAT provides powerful AI-driven text and image processing nodes for Comf
 | 🤖 **Vision API Reverse Prompt** | Image-to-Text | Generate prompts from images through OpenAI-compatible APIs, Gemini, and other vision providers |
 | 🌐 **Qwen Translator** | Translation | Translate Chinese/Japanese to natural English |
 | ✏️ **Qwen Kontext Translator** | Editing Optimization | Optimize editing instructions for image editing models |
+| 🖼️ **Output Browser** | Media Library | Browse nested output folders and drag workflow-bearing images/videos onto the canvas |
 | 🎨 **Image Color Palette Extractor** | Color Analysis | Extract dominant colors and generate a ratio-based palette image |
 
 ### 🚀 Quick Start
@@ -152,6 +153,13 @@ qwen_compatible:
 
 ### 📖 Usage
 
+#### Output Browser
+
+Open **Output Browser** from ComfyUI's left sidebar. Browse nested folders under
+`ComfyUI/output`, search the current folder, and drag an image or video onto the
+canvas to let ComfyUI load its embedded workflow. Double-clicking a media card or
+using its import button performs the same action. The media file must contain
+workflow metadata supported by ComfyUI.
 Model selection now uses official `model_variant` entries only:
 - `Qwen3.5-0.8B`
 - `Qwen3.5-2B`
@@ -285,6 +293,7 @@ ComfyUI-IAT 为 ComfyUI 工作流提供强大的 AI 驱动的文本和图像处�
 | 🤖 **Vision API 反推提示词** | 图像转文本 | 通过 OpenAI 兼容接口、Gemini 等视觉 API 从图像生成提示词 |
 | 🌐 **Qwen 翻译器** | 翻译 | 将中文/日文翻译成自然流畅的英文 |
 | ✏️ **Qwen 编辑提示词优化** | 编辑优化 | 为图像编辑模型优化编辑指令 |
+| 🖼️ **输出浏览器** | 媒体库 | 嵌套浏览 output 目录，并将含工作流的图片/视频拖入画布 |
 | 🎨 **图像主色调色板提取器** | 颜色分析 | 提取图片主色并输出按占比绘制的色条图 |
 
 ### 🚀 快速开始
@@ -375,6 +384,12 @@ qwen_compatible:
 
 ### 📖 使用方法
 
+#### 输出浏览器
+
+从 ComfyUI 左侧边栏打开 **Output Browser**。面板会嵌套浏览
+`ComfyUI/output` 下的文件夹，并支持搜索当前目录。将图片或视频拖到画布、
+双击媒体卡片，或点击导入按钮，都可以交给 ComfyUI 加载其中嵌入的工作流。
+媒体文件需要包含 ComfyUI 支持的工作流元数据。
 模型选择仅保留官方原版 `model_variant`：
 - `Qwen3.5-0.8B`
 - `Qwen3.5-2B`

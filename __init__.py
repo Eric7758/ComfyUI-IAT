@@ -18,6 +18,7 @@ WEB_DIRECTORY = "./js"
 
 NODE_CLASS_MAPPINGS: dict = {}
 NODE_DISPLAY_NAME_MAPPINGS: dict = {}
+WEB_DIRECTORY = "./web"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY", "__version__"]
 
@@ -90,6 +91,11 @@ except Exception as e:
     node_modules = []
 
 _register_nodes(node_modules, verbose)
+
+try:
+    importlib.import_module(".py.output_browser", package=__name__)
+except Exception as e:
+    print(f"[IAT] ERROR: Failed to load output browser: {e}")
 
 node_count = len(NODE_CLASS_MAPPINGS)
 if node_count > 0:
