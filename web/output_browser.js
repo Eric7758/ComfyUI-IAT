@@ -1,5 +1,5 @@
-import { app } from "../../../scripts/app.js";
-import { api } from "../../../scripts/api.js";
+import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 const DRAG_TYPE = "application/x-comfyui-iat-output";
 const FAVORITES_KEY = "comfyui-iat-output-favorites";
@@ -35,6 +35,7 @@ const translations = {
         sortBy: "Sort by",
         updated: "Updated",
         name: "Name",
+        fileType: "File type",
         download: "Download",
         loadWorkflow: "Load workflow",
         open: "Open",
@@ -64,6 +65,7 @@ const translations = {
         sortBy: "排序方式",
         updated: "更新时间",
         name: "名称",
+        fileType: "文件类型",
         download: "下载",
         loadWorkflow: "加载工作流",
         open: "打开",
@@ -116,7 +118,7 @@ function compareNames(leftName, rightName) {
 }
 
 function itemTime(item) {
-    return item.kind === "folder" ? (item.modified || 0) : (item.created || 0);
+    return item.modified || 0;
 }
 
 function protectUserText(element) {
@@ -531,7 +533,11 @@ class OutputBrowserPanel {
         sortWrap.innerHTML = '<i class="pi pi-sort-alt" aria-hidden="true"></i>';
         const sort = document.createElement("select");
         sort.setAttribute("aria-label", t("sortBy"));
-        sort.append(new Option(t("updated"), "time"), new Option(t("name"), "name"));
+        sort.append(
+            new Option(t("updated"), "time"),
+            new Option(t("name"), "name"),
+            new Option(t("fileType"), "type"),
+        );
         sort.value = this.sortMode;
         sort.addEventListener("change", () => {
             this.sortMode = sort.value;
@@ -738,8 +744,13 @@ class OutputBrowserPanel {
         this.clearAudioControllers();
         const visible = this.items
             .sort((left, right) => {
-                const typeOrder = (kindOrder[left.kind] ?? 5) - (kindOrder[right.kind] ?? 5);
-                if (typeOrder) return typeOrder;
+                const leftIsFolder = left.kind === "folder";
+                const rightIsFolder = right.kind === "folder";
+                if (leftIsFolder !== rightIsFolder) return leftIsFolder ? -1 : 1;
+                if (this.sortMode === "type") {
+                    const typeOrder = (kindOrder[left.kind] ?? 5) - (kindOrder[right.kind] ?? 5);
+                    if (typeOrder) return typeOrder;
+                }
                 if (this.sortMode === "time") {
                     const timeOrder = itemTime(right) - itemTime(left);
                     if (timeOrder) return timeOrder;
