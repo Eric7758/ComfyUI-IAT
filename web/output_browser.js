@@ -1,5 +1,5 @@
-import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+import { app } from "../../../scripts/app.js";
+import { api } from "../../../scripts/api.js";
 
 const DRAG_TYPE = "application/x-comfyui-iat-output";
 const FAVORITES_KEY = "comfyui-iat-output-favorites";
@@ -203,9 +203,9 @@ function createAudioSpectrum(audio, label, onError) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "iat-output-spectrum";
-    button.setAttribute("aria-label", `${t("play")} ${label}`);
+    button.setAttribute("aria-label", label);
     button.setAttribute("aria-pressed", "false");
-    button.title = `${t("play")} ${label}`;
+    button.title = label;
 
     const canvas = document.createElement("canvas");
     canvas.setAttribute("aria-hidden", "true");
@@ -319,15 +319,26 @@ function createAudioSpectrum(audio, label, onError) {
     const setPlayingState = (playing) => {
         button.classList.toggle("iat-output-spectrum-playing", playing);
         button.setAttribute("aria-pressed", String(playing));
-        button.setAttribute("aria-label", `${playing ? t("pause") : t("play")} ${label}`);
-        button.title = `${playing ? t("pause") : t("play")} ${label}`;
+        button.setAttribute("aria-label", label);
+        button.title = label;
         if (animationFrame) cancelAnimationFrame(animationFrame);
         animationFrame = requestAnimationFrame(draw);
     };
 
     const controller = {
+        play() {
+            if (activeAudioController && activeAudioController !== controller) {
+                activeAudioController.pause();
+            }
+            return audio.play();
+        },
         pause() {
             audio.pause();
+        },
+        reset() {
+            audio.pause();
+            audio.currentTime = 0;
+            draw();
         },
         dispose() {
             disposed = true;
@@ -341,13 +352,13 @@ function createAudioSpectrum(audio, label, onError) {
 
     button.addEventListener("click", async (event) => {
         event.stopPropagation();
-        if (!audio.paused) {
-            audio.pause();
-            return;
+        const rect = button.getBoundingClientRect();
+        if (rect.width && Number.isFinite(audio.duration)) {
+            audio.currentTime = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)) * audio.duration;
+            draw();
         }
-        activeAudioController?.pause();
         try {
-            await audio.play();
+            await controller.play();
         } catch (error) {
             onError(error.message || `${t("unableRead")} ${label}`);
         }
@@ -364,6 +375,7 @@ function createAudioSpectrum(audio, label, onError) {
         if (activeAudioController === controller) activeAudioController = null;
         setPlayingState(false);
     });
+    audio.loop = true;
     audio.addEventListener("ended", () => {
         if (activeAudioController === controller) activeAudioController = null;
         setPlayingState(false);
@@ -553,6 +565,15 @@ class OutputBrowserPanel {
 
         this.content = document.createElement("div");
         this.content.className = "iat-output-content";
+        this.content.addEventListener("dblclick", (event) => {
+            const target = event.target;
+            if (target instanceof Element && target.closest("button, article, .iat-output-folder, .iat-output-card, input, select, audio, video, canvas")) return;
+            if (this.currentPath) {
+                event.preventDefault();
+                event.stopPropagation();
+                this.load(this.parentPath);
+            }
+        });
         this.content.dataset.view = this.displayMode;
         this.updateDisplayButtons();
         this.container.replaceChildren(
@@ -831,8 +852,11 @@ class OutputBrowserPanel {
         const card = document.createElement("article");
         card.className = "iat-output-card";
         card.draggable = true;
-        card.title = item.name;
         card.addEventListener("dragstart", (event) => {
+            if (event.target instanceof Element && event.target.closest("video, .iat-output-video-wrap")) {
+                event.preventDefault();
+                return;
+            }
             event.dataTransfer.effectAllowed = "copy";
             event.dataTransfer.setData(DRAG_TYPE, JSON.stringify(item));
             event.dataTransfer.setData("text/plain", item.path);
@@ -860,6 +884,12 @@ class OutputBrowserPanel {
             const spectrum = createAudioSpectrum(audio, item.name, (message) => this.showError(message));
             this.audioControllers.add(spectrum.controller);
             preview.append(spectrum.button, audio);
+            preview.addEventListener("mouseenter", () => {
+                spectrum.controller.play().catch(() => {});
+            });
+            preview.addEventListener("mouseleave", () => {
+                spectrum.controller.reset();
+            });
         } else if (item.kind === "other") {
             preview = document.createElement("div");
             preview.className = "iat-output-preview iat-output-file-preview";
@@ -874,11 +904,94 @@ class OutputBrowserPanel {
             preview.muted = true;
             preview.loop = true;
             preview.preload = "metadata";
-            preview.addEventListener("loadedmetadata", () => updateMediaMeta(preview, item, meta));
-            card.addEventListener("mouseenter", () => preview.play().catch(() => {}));
+            const video = preview;
+            const videoWrap = document.createElement("div");
+            videoWrap.className = "iat-output-video-wrap";
+            const progress = document.createElement("div");
+            progress.className = "iat-output-video-progress";
+            progress.setAttribute("role", "progressbar");
+            progress.setAttribute("aria-label", language === "zh" ? "视频播放进度" : "Video playback progress");
+            progress.setAttribute("aria-valuemin", "0");
+            progress.setAttribute("aria-valuemax", "100");
+            progress.setAttribute("aria-valuenow", "0");
+            const progressFill = document.createElement("span");
+            progressFill.className = "iat-output-video-progress-fill";
+            progress.append(progressFill);
+            videoWrap.append(video, progress);
+            preview = videoWrap;
+            video.addEventListener("loadedmetadata", () => updateMediaMeta(video, item, meta));
+            const updateProgress = () => {
+                const ratio = Number.isFinite(video.duration) && video.duration > 0 ? video.currentTime / video.duration : 0;
+                progressFill.style.width = `${Math.min(1, Math.max(0, ratio)) * 100}%`;
+                progress.setAttribute("aria-valuenow", String(Math.round(ratio * 100)));
+            };
+            const setProgressVisible = (visible) => {
+                progress.classList.toggle("iat-output-video-progress-visible", visible);
+            };
+            const seekFromClientX = (clientX) => {
+                const rect = video.getBoundingClientRect();
+                if (!rect.width || !Number.isFinite(video.duration)) return;
+                video.currentTime = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width)) * video.duration;
+                updateProgress();
+                setProgressVisible(true);
+            };
+            let hoverTimer = 0;
+            let hovering = false;
+            let playbackStarted = false;
+            let pendingClientX = null;
+            let seekFrame = 0;
+            const queueSeek = (clientX) => {
+                pendingClientX = clientX;
+                if (seekFrame) return;
+                seekFrame = requestAnimationFrame(() => {
+                    seekFrame = 0;
+                    if (pendingClientX !== null) {
+                        const nextX = pendingClientX;
+                        pendingClientX = null;
+                        seekFromClientX(nextX);
+                    }
+                });
+            };
+            const schedulePlayback = () => {
+                clearTimeout(hoverTimer);
+                hoverTimer = window.setTimeout(() => {
+                    video.play().then(() => {
+                        playbackStarted = true;
+                    }).catch(() => {});
+                }, 600);
+            };
+            video.addEventListener("timeupdate", updateProgress);
+            video.addEventListener("loadedmetadata", updateProgress);
+            video.addEventListener("playing", () => setProgressVisible(true));
+            video.addEventListener("pause", () => setProgressVisible(false));
+            card.addEventListener("mouseenter", () => {
+                hovering = true;
+                schedulePlayback();
+            });
             card.addEventListener("mouseleave", () => {
-                preview.pause();
-                preview.currentTime = 0;
+                clearTimeout(hoverTimer);
+                hovering = false;
+                playbackStarted = false;
+                video.pause();
+                video.currentTime = 0;
+                updateProgress();
+                setProgressVisible(false);
+                pendingClientX = null;
+                if (seekFrame) { cancelAnimationFrame(seekFrame); seekFrame = 0; }
+            });
+            video.draggable = false;
+            video.addEventListener("dragstart", (event) => event.preventDefault());
+            video.addEventListener("pointermove", (event) => {
+                // Hover scrubbing: horizontal cursor movement seeks without a click.
+                if (!hovering || !playbackStarted) return;
+                clearTimeout(hoverTimer);
+                video.pause();
+                queueSeek(event.clientX);
+                schedulePlayback();
+                event.stopPropagation();
+            });
+            video.addEventListener("click", (event) => {
+                event.stopPropagation();
             });
         } else if (item.kind === "image") {
             preview.loading = "lazy";
@@ -888,6 +1001,7 @@ class OutputBrowserPanel {
 
         const details = document.createElement("div");
         details.className = "iat-output-details";
+        details.title = item.name;
         const name = document.createElement("span");
         name.className = "iat-output-name";
         protectUserText(name);
