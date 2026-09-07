@@ -564,7 +564,7 @@ class EmbeddingAdapterTests(unittest.TestCase):
         encoded_sizes = []
 
         class FakeAdapter:
-            def encode_images(self, images, instruction=""):
+            def encode_images(self, images, instruction="", *, batch_size=None):
                 encoded_sizes.extend((image.size, image.mode, instruction) for image in images)
                 return [[1.0, 0.0] for _ in images]
 

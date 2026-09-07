@@ -4,6 +4,7 @@ import gc
 import hashlib
 import json
 from pathlib import Path
+from threading import RLock
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
@@ -11,7 +12,8 @@ class EmbeddingAdapterError(RuntimeError):
     """Raised when a local embedding model cannot be loaded or encoded."""
 
 
-_ADAPTERS: Dict[Tuple[str, str, str, int, int], "EmbeddingAdapter"] = {}
+_ADAPTERS: Dict[Tuple[str, str, str, int], "EmbeddingAdapter"] = {}
+_ADAPTER_LOCK = RLock()
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -95,6 +97,8 @@ def _normalized_lists(values: Any, dimension: int = 0) -> List[List[float]]:
         array = array.reshape(1, -1)
     if array.ndim != 2 or array.shape[1] == 0:
         raise EmbeddingAdapterError(f"Embedding model returned an invalid shape: {array.shape}")
+    if not np.isfinite(array).all():
+        raise EmbeddingAdapterError("Embedding model returned non-finite values.")
     if dimension:
         if dimension > array.shape[1]:
             raise EmbeddingAdapterError(
@@ -102,7 +106,7 @@ def _normalized_lists(values: Any, dimension: int = 0) -> List[List[float]]:
             )
         array = array[:, :dimension]
     norms = np.linalg.norm(array, axis=1, keepdims=True)
-    if np.any(norms < 1e-12):
+    if not np.isfinite(norms).all() or np.any(norms < 1e-12):
         raise EmbeddingAdapterError("Embedding model returned a zero-length vector.")
     return (array / norms).tolist()
 
@@ -116,10 +120,10 @@ class EmbeddingAdapter:
         self.batch_size = max(1, int(batch_size))
         self.dimension = max(0, int(dimension))
 
-    def encode_texts(self, texts: Sequence[str], instruction: str = "") -> List[List[float]]:
+    def encode_texts(self, texts: Sequence[str], instruction: str = "", *, batch_size: Optional[int] = None) -> List[List[float]]:
         raise NotImplementedError
 
-    def encode_images(self, images: Sequence[Any], instruction: str = "") -> List[List[float]]:
+    def encode_images(self, images: Sequence[Any], instruction: str = "", *, batch_size: Optional[int] = None) -> List[List[float]]:
         raise NotImplementedError
 
     def unload(self) -> None:
@@ -143,13 +147,14 @@ class ChineseCLIPEmbeddingAdapter(EmbeddingAdapter):
                 f"Failed to load local Chinese CLIP embedding model `{self.model_path}`: {exc}"
             ) from exc
 
-    def encode_texts(self, texts: Sequence[str], instruction: str = "") -> List[List[float]]:
+    def encode_texts(self, texts: Sequence[str], instruction: str = "", *, batch_size: Optional[int] = None) -> List[List[float]]:
         import torch
 
         vectors: List[List[float]] = []
-        for start in range(0, len(texts), self.batch_size):
+        batch_size = self.batch_size if batch_size is None else max(1, int(batch_size))
+        for start in range(0, len(texts), batch_size):
             inputs = self.processor(
-                text=list(texts[start : start + self.batch_size]), padding=True, return_tensors="pt"
+                text=list(texts[start : start + batch_size]), padding=True, return_tensors="pt"
             )
             inputs = {key: value.to(self.device) for key, value in inputs.items()}
             with torch.inference_mode():
@@ -157,12 +162,13 @@ class ChineseCLIPEmbeddingAdapter(EmbeddingAdapter):
             vectors.extend(_normalized_lists(features.detach().float().cpu(), self.dimension))
         return vectors
 
-    def encode_images(self, images: Sequence[Any], instruction: str = "") -> List[List[float]]:
+    def encode_images(self, images: Sequence[Any], instruction: str = "", *, batch_size: Optional[int] = None) -> List[List[float]]:
         import torch
 
         vectors: List[List[float]] = []
-        for start in range(0, len(images), self.batch_size):
-            inputs = self.processor(images=list(images[start : start + self.batch_size]), return_tensors="pt")
+        batch_size = self.batch_size if batch_size is None else max(1, int(batch_size))
+        for start in range(0, len(images), batch_size):
+            inputs = self.processor(images=list(images[start : start + batch_size]), return_tensors="pt")
             inputs = {key: value.to(self.device) for key, value in inputs.items()}
             with torch.inference_mode():
                 features = self.model.get_image_features(**inputs)
@@ -214,14 +220,14 @@ class Qwen3VLEmbeddingAdapter(EmbeddingAdapter):
                 f"Failed to load local Qwen3-VL embedding model `{self.model_path}`: {exc}"
             ) from exc
 
-    def _encode(self, inputs: Sequence[Any], instruction: str) -> List[List[float]]:
+    def _encode(self, inputs: Sequence[Any], instruction: str, batch_size: Optional[int] = None) -> List[List[float]]:
         if not inputs:
             return []
         try:
             values = self.model.encode(
                 list(inputs),
                 prompt=(instruction or None),
-                batch_size=self.batch_size,
+                batch_size=self.batch_size if batch_size is None else max(1, int(batch_size)),
                 show_progress_bar=False,
                 convert_to_numpy=True,
                 normalize_embeddings=True,
@@ -230,11 +236,11 @@ class Qwen3VLEmbeddingAdapter(EmbeddingAdapter):
             raise EmbeddingAdapterError(f"Qwen3-VL embedding failed: {exc}") from exc
         return _normalized_lists(values, self.dimension)
 
-    def encode_texts(self, texts: Sequence[str], instruction: str = "") -> List[List[float]]:
-        return self._encode(list(texts), instruction)
+    def encode_texts(self, texts: Sequence[str], instruction: str = "", *, batch_size: Optional[int] = None) -> List[List[float]]:
+        return self._encode(list(texts), instruction, batch_size)
 
-    def encode_images(self, images: Sequence[Any], instruction: str = "") -> List[List[float]]:
-        return self._encode([{"image": image} for image in images], instruction)
+    def encode_images(self, images: Sequence[Any], instruction: str = "", *, batch_size: Optional[int] = None) -> List[List[float]]:
+        return self._encode([{"image": image} for image in images], instruction, batch_size)
 
     def unload(self) -> None:
         try:
@@ -253,21 +259,22 @@ def get_embedding_adapter(
 ) -> EmbeddingAdapter:
     path = str(Path(model_path).expanduser().resolve())
     resolved_provider = detect_embedding_provider(path, provider)
-    key = (resolved_provider, path, device, max(1, int(batch_size)), max(0, int(dimension)))
-    adapter = _ADAPTERS.get(key)
-    if adapter is not None:
+    key = (resolved_provider, path, device, max(0, int(dimension)))
+    with _ADAPTER_LOCK:
+        adapter = _ADAPTERS.get(key)
+        if adapter is None:
+            cls = Qwen3VLEmbeddingAdapter if resolved_provider == "qwen3_vl" else ChineseCLIPEmbeddingAdapter
+            adapter = cls(path, device, batch_size, dimension)
+            _ADAPTERS[key] = adapter
         return adapter
-    cls = Qwen3VLEmbeddingAdapter if resolved_provider == "qwen3_vl" else ChineseCLIPEmbeddingAdapter
-    adapter = cls(path, device, batch_size, dimension)
-    _ADAPTERS[key] = adapter
-    return adapter
 
 
 def unload_embedding_adapters() -> None:
-    adapters = list(_ADAPTERS.values())
-    _ADAPTERS.clear()
-    for adapter in adapters:
-        adapter.unload()
+    with _ADAPTER_LOCK:
+        adapters = list(_ADAPTERS.values())
+        _ADAPTERS.clear()
+        for adapter in adapters:
+            adapter.unload()
     gc.collect()
     try:
         import torch

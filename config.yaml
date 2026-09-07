@@ -6,11 +6,17 @@ datasets:
   # External dataset root. Each dataset directory must contain dataset.json and
   # images/<stem>.png + images/<stem>.txt pairs.
   root: "../IAT-datasets"
-  # Point to an already-downloaded local Chinese CLIP directory. Runtime never
+  # Point to a local Chinese CLIP or Qwen3-VL-Embedding directory. Runtime never
   # downloads this model. Set empty only when BM25-only retrieval is intentional.
   embedding_model_path: ""
+  embedding_provider: "auto"  # auto / chinese_clip / qwen3_vl
   embedding_device: "cpu"  # cpu / cuda / auto
   embedding_batch_size: 16
+  embedding_dimension: 0  # 0 keeps the model output dimension
+  embedding_query_instruction: ""
+  embedding_document_instruction: ""
+  # Keep false when generation needs the same GPU; true avoids repeated loading.
+  embedding_keep_loaded: false
   index_cache_dir: ""
 
 llm:

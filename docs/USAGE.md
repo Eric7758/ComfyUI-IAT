@@ -257,6 +257,38 @@ region can be accepted or rejected independently after generation.
 - The default configuration is fully offline and points at local Ollama `qwen3.5:122b`.
 - The node returns the final prompt, retrieved captions, retrieval scores/debug JSON, and dataset metadata.
 
+### Retrieval performance and model reuse
+
+- Embedding models are reused across text/image calls with different batch sizes.
+  Batch size is passed per encoding call; device and output dimension remain part
+  of the adapter identity. Query/document instructions are unchanged.
+- Dense scores use lazily built contiguous `float32` matrices. BM25 term weights
+  and postings are prepared once per index. Fusion weights, material coverage,
+  and seeded MMR policy are unchanged; float32 scores may differ slightly from
+  previous Python arithmetic, particularly for near-ties.
+- Up to two CPU indexes are kept in an LRU cache. Source fingerprints, encoder
+  settings, record metadata, and disk-cache contents are checked before reuse.
+  Hashing still reads files; this avoids JSON decoding and statistics rebuilding,
+  not all disk I/O. Separately decoded `.iatdb` snapshots are not conflated.
+- Existing schema-v5 JSON caches and schema-v2 `.iatdb` bundles remain compatible.
+  JSON cache replacement is atomic; malformed/non-finite cached vectors rebuild.
+- `datasets.embedding_keep_loaded: false` remains the default so retrieval can
+  release model memory before generation. Set it to `true` for repeated queries
+  when the CPU/GPU has room for both embedding and generation models. It is
+  independent of the bounded CPU index cache.
+- This update does not change the embedding model, add a reranker, migrate vector
+  formats, or alter the CMF planning strategy. Those require dataset evaluation.
+
+Run the synthetic CPU benchmark from the plugin directory with the active Python:
+
+```powershell
+python -B scripts/benchmark_retrieval.py --entries 5000 --dimensions 1024 --repeats 5
+```
+
+It checks numerical agreement and reports median scoring times plus first-use
+matrix/statistics preparation. It excludes embedding inference, dataset I/O,
+MMR, and generation; its speedup is not an end-to-end workflow speedup.
+
 ### Portable SQLite datasets
 
 Drag one dataset directory, or the dataset root for a batch build, onto

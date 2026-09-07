@@ -14,9 +14,13 @@ import random
 import re
 import sqlite3
 import tempfile
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
 
 from .embedding_adapters import (
     EmbeddingAdapterError,
@@ -51,6 +55,9 @@ _BUNDLE_SCHEMA_VERSION = 2
 _BUNDLE_FORMAT = "comfyui-iat-dataset"
 _INDEX_SCHEMA_VERSION = 5
 _QWEN_IMAGE_MAX_SIDE = 768
+_INDEX_CACHE: OrderedDict = OrderedDict()
+_INDEX_CACHE_LIMIT = 2
+_INDEX_CACHE_LOCK = RLock()
 
 
 class DatasetError(RuntimeError):
@@ -991,38 +998,63 @@ class DatasetIndex:
         for tokens in self.tokens:
             for token in set(tokens):
                 self.document_frequency[token] = self.document_frequency.get(token, 0) + 1
+        # Precompute the existing BM25 formula; queries only visit matching postings.
+        document_count = len(self.tokens) or 1
+        average_length = sum(map(len, self.tokens)) / document_count
+        postings: Dict[str, list] = {}
+        for ordinal, tokens in enumerate(self.tokens):
+            length_factor = len(tokens) / max(average_length, 1.0)
+            for token, frequency in Counter(tokens).items():
+                df = self.document_frequency[token]
+                idf = math.log(1.0 + (document_count - df + 0.5) / (df + 0.5))
+                weight = idf * (frequency * 2.5 / (frequency + 1.5 * (0.75 + 0.25 * length_factor)))
+                postings.setdefault(token, []).append((ordinal, weight))
+        self._postings = {
+            token: (np.asarray([row[0] for row in rows], dtype=np.intp),
+                    np.asarray([row[1] for row in rows], dtype=np.float64))
+            for token, rows in postings.items()
+        }
+        self._matrices: Dict[str, np.ndarray] = {}
 
     @property
     def version(self) -> str:
         return f"hybrid-v5:{self.fingerprint[:12]}"
 
     def _bm25_scores(self, query: str) -> List[float]:
-        query_tokens = tokenize(query)
-        if not query_tokens:
-            return [0.0] * len(self.record.entries)
-        query_counts: Dict[str, int] = {}
-        for token in query_tokens:
-            query_counts[token] = query_counts.get(token, 0) + 1
-        document_count = len(self.tokens) or 1
-        average_length = sum(len(tokens) for tokens in self.tokens) / document_count if self.tokens else 1.0
-        scores = []
-        for tokens in self.tokens:
-            counts: Dict[str, int] = {}
-            for token in tokens:
-                counts[token] = counts.get(token, 0) + 1
-            length_factor = len(tokens) / max(average_length, 1.0)
-            score = 0.0
-            for token, query_count in query_counts.items():
-                frequency = counts.get(token, 0)
-                if not frequency:
+        scores = np.zeros(len(self.record.entries), dtype=np.float64)
+        for token, count in Counter(tokenize(query)).items():
+            posting = self._postings.get(token)
+            if posting is not None:
+                ordinals, weights = posting
+                scores[ordinals] += weights * (1.0 + math.log1p(count))
+        return scores.tolist()
+
+    def _vector_scores(self, query: Optional[Sequence[float]], kind: str) -> List[float]:
+        vectors = getattr(self, f"{kind}_embeddings")
+        count = len(self.record.entries)
+        if query is None or not vectors:
+            return [0.0] * count
+        matrix = self._matrices.get(kind)
+        if matrix is None:
+            if len(vectors) != count:
+                raise DatasetError(f"[IAT] {kind} vector count does not match dataset entries.")
+            dimension = next((len(vector) for vector in vectors if vector is not None), 0)
+            matrix = np.zeros((count, dimension), dtype=np.float32)
+            for ordinal, vector in enumerate(vectors):
+                if vector is None:
                     continue
-                document_frequency = self.document_frequency.get(token, 0)
-                idf = math.log(1.0 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5))
-                numerator = frequency * 2.5
-                denominator = frequency + 1.5 * (0.75 + 0.25 * length_factor)
-                score += idf * (numerator / max(denominator, 1e-6)) * (1.0 + math.log1p(query_count))
-            scores.append(score)
-        return scores
+                if len(vector) != dimension or not dimension:
+                    raise DatasetError(f"[IAT] Inconsistent {kind} embedding dimensions.")
+                matrix[ordinal] = vector
+            if not np.isfinite(matrix).all():
+                raise DatasetError(f"[IAT] Non-finite {kind} embeddings.")
+            self._matrices[kind] = matrix
+        if not matrix.shape[1]:
+            return [0.0] * count
+        query_vector = np.asarray(query, dtype=np.float32)
+        if query_vector.shape != (matrix.shape[1],) or not np.isfinite(query_vector).all():
+            raise DatasetError(f"[IAT] Invalid query vector for {kind} embeddings.")
+        return np.clip(matrix @ query_vector, -1.0, 1.0).tolist()
 
     def _similarity_to_selected(self, left: int, right: int) -> float:
         if self.text_embeddings and left < len(self.text_embeddings) and right < len(self.text_embeddings):
@@ -1146,9 +1178,8 @@ class DatasetIndex:
                     )
                 )
 
-        text_scores = [_cosine(text_query, vector) for vector in self.text_embeddings] if text_query else [0.0] * len(self.record.entries)
-        image_vectors = self.image_embeddings if preserve_reference_color else self.gray_embeddings
-        image_scores = [_cosine(image_query, vector) for vector in image_vectors] if image_query else [0.0] * len(self.record.entries)
+        text_scores = self._vector_scores(text_query, "text")
+        image_scores = self._vector_scores(image_query, "image" if preserve_reference_color else "gray")
 
         if references and self.embedding_model_path:
             weights = {"image": 0.45, "text": 0.35, "bm25": 0.20}
@@ -1362,7 +1393,7 @@ def _encode_text(
         return None
     try:
         adapter = _load_embedding_model(model_path, device, batch_size, provider, dimension)
-        return adapter.encode_texts([text], instruction=instruction)[0]
+        return adapter.encode_texts([text], instruction=instruction, batch_size=batch_size)[0]
     except (EmbeddingModelUnavailable, EmbeddingAdapterError) as exc:
         raise EmbeddingModelUnavailable(f"[IAT] Failed to encode text with local embedding model: {exc}") from exc
 
@@ -1394,7 +1425,7 @@ def _encode_image(
         if grayscale:
             prepared = prepared.convert("L").convert("RGB")
         adapter = _load_embedding_model(model_path, device, batch_size, provider, dimension)
-        return adapter.encode_images([prepared], instruction=instruction)[0]
+        return adapter.encode_images([prepared], instruction=instruction, batch_size=batch_size)[0]
     except (EmbeddingModelUnavailable, EmbeddingAdapterError) as exc:
         raise EmbeddingModelUnavailable(f"[IAT] Failed to encode image with local embedding model: {exc}") from exc
 
@@ -1410,7 +1441,7 @@ def _encode_text_batch(
 ) -> List[List[float]]:
     try:
         adapter = _load_embedding_model(model_path, device, batch_size, provider, dimension)
-        return adapter.encode_texts(texts, instruction=instruction)
+        return adapter.encode_texts(texts, instruction=instruction, batch_size=batch_size)
     except (EmbeddingModelUnavailable, EmbeddingAdapterError) as exc:
         raise EmbeddingModelUnavailable(f"[IAT] Failed to encode text batch: {exc}") from exc
 
@@ -1441,7 +1472,7 @@ def _encode_image_batch(
                 value = value.convert("L").convert("RGB")
             prepared.append(value)
         adapter = _load_embedding_model(model_path, device, batch_size, provider, dimension)
-        return adapter.encode_images(prepared, instruction=instruction)
+        return adapter.encode_images(prepared, instruction=instruction, batch_size=batch_size)
     except (EmbeddingModelUnavailable, EmbeddingAdapterError) as exc:
         raise EmbeddingModelUnavailable(f"[IAT] Failed to encode image batch: {exc}") from exc
 
@@ -1569,7 +1600,9 @@ def _deserialize_index(
                     return None
                 if dimensions is None:
                     dimensions = len(vector)
-                if len(vector) != dimensions or any(not isinstance(value, (int, float)) for value in vector):
+                if len(vector) != dimensions or any(
+                    not isinstance(value, (int, float)) or not math.isfinite(value) for value in vector
+                ):
                     return None
     return DatasetIndex(
         record,
@@ -1586,6 +1619,41 @@ def _deserialize_index(
         document_instruction=document_instruction,
         model_signature=model_signature,
     )
+
+
+def clear_dataset_index_cache() -> None:
+    """Release CPU index state without unloading embedding models."""
+    with _INDEX_CACHE_LOCK:
+        _INDEX_CACHE.clear()
+
+
+def _cache_content_revision(path: Path) -> Optional[str]:
+    # Same-size rewrites can share a filesystem timestamp. Hash the bytes so a
+    # hot index cannot hide a modified/corrupt disk cache; skip JSON decoding.
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _write_index_cache(index: DatasetIndex, cache_path: Path) -> Optional[str]:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=cache_path.parent, suffix=".tmp", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump(_serialize_index(index), stream, ensure_ascii=False)
+        revision = _cache_content_revision(temporary)
+        os.replace(temporary, cache_path)
+        return revision
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def get_dataset_index(
@@ -1613,6 +1681,54 @@ def get_dataset_index(
                 raise EmbeddingModelUnavailable(f"[IAT] {exc}") from exc
             # Unit tests can mock the loader with a synthetic path; real loads still fail below.
             model_signature = hashlib.sha256(str(embedding_model_path).encode("utf-8")).hexdigest()
+
+    cache_dir = Path(cache_dir)
+    cache_path = cache_dir / f"{_safe_name(record.dataset_name)}.index.json"
+    tracked_path = record.bundle_path or cache_path
+    # Include in-memory metadata as well as source bytes: callers may supply a
+    # modified record, and bundle compatibility checks must not be bypassed.
+    record_signature = hashlib.sha256(json.dumps(
+        {
+            "metadata": record.metadata,
+            "warnings": record.warnings,
+            "entries": [
+                (entry.record_id, entry.caption, entry.grouped_relative_image_paths(), entry.metadata)
+                for entry in record.entries
+            ],
+        }, sort_keys=True, ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+    identity = (
+        str(record.source_path.resolve()), str(tracked_path.resolve()), fingerprint, record_signature,
+        str(embedding_model_path), resolved_provider, model_signature, resolved_device,
+        int(embedding_batch_size), int(embedding_dimension),
+        embedding_query_instruction, embedding_document_instruction, bool(require_embeddings),
+        # A loaded bundle is a snapshot. Do not reuse its matrices for a newly
+        # decoded snapshot merely because captions/metadata happen to match.
+        tuple(id(vectors) for vectors in (
+            record.bundled_text_embeddings, record.bundled_image_embeddings, record.bundled_gray_embeddings
+        )) if record.bundle_path is not None else (),
+    )
+
+    def cache_revision() -> Optional[str]:
+        return fingerprint if record.bundle_path is not None else _cache_content_revision(cache_path)
+
+    memory_key = (identity, cache_revision())
+    with _INDEX_CACHE_LOCK:
+        cached = _INDEX_CACHE.get(memory_key)
+        if cached is not None:
+            _INDEX_CACHE.move_to_end(memory_key)
+            return cached
+
+    def remember(index: DatasetIndex, revision: Optional[str]) -> DatasetIndex:
+        if revision is None or revision != cache_revision():
+            return index
+        key = (identity, revision)
+        with _INDEX_CACHE_LOCK:
+            _INDEX_CACHE[key] = index
+            _INDEX_CACHE.move_to_end(key)
+            while len(_INDEX_CACHE) > _INDEX_CACHE_LIMIT:
+                _INDEX_CACHE.popitem(last=False)
+        return index
 
     if record.bundle_path is not None:
         if not embedding_model_path:
@@ -1646,7 +1762,7 @@ def get_dataset_index(
             raise EmbeddingModelUnavailable(
                 "[IAT] Document instruction differs from the instruction stored in the compiled dataset."
             )
-        return DatasetIndex(
+        return remember(DatasetIndex(
             record,
             fingerprint,
             text_embeddings=record.bundled_text_embeddings,
@@ -1660,14 +1776,14 @@ def get_dataset_index(
             query_instruction=stored_query_instruction,
             document_instruction=stored_document_instruction,
             model_signature=model_signature,
-        )
-    cache_dir = Path(cache_dir)
+        ), fingerprint)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"{_safe_name(record.dataset_name)}.index.json"
     if cache_path.is_file():
         try:
+            cache_bytes = cache_path.read_bytes()
+            read_revision = hashlib.sha256(cache_bytes).hexdigest()
             cached = _deserialize_index(
-                json.loads(cache_path.read_text(encoding="utf-8")),
+                json.loads(cache_bytes),
                 record,
                 fingerprint,
                 embedding_model_path,
@@ -1682,7 +1798,7 @@ def get_dataset_index(
             if cached is not None:
                 if require_embeddings and not cached.text_embeddings:
                     raise EmbeddingModelUnavailable("[IAT] Dataset index has no embeddings; configure a local Chinese CLIP model.")
-                return cached
+                return remember(cached, read_revision)
         except EmbeddingModelUnavailable:
             raise
         except Exception:
@@ -1772,11 +1888,12 @@ def get_dataset_index(
     )
     if require_embeddings and not text_embeddings:
         raise EmbeddingModelUnavailable("[IAT] Embedding model path is not configured; set datasets.embedding_model_path for hybrid retrieval.")
+    written_revision = None
     try:
-        cache_path.write_text(json.dumps(_serialize_index(index), ensure_ascii=False), encoding="utf-8")
+        written_revision = _write_index_cache(index, cache_path)
     except Exception as exc:
         index.warnings.append(f"Could not write index cache `{cache_path}`: {exc}")
-    return index
+    return remember(index, written_revision)
 
 
 def dataset_metadata(record: DatasetRecord) -> Dict[str, Any]:
