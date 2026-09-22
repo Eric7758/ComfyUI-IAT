@@ -37,47 +37,6 @@ function getCollectionValues(collection) {
     return Object.values(collection);
 }
 
-function getMutableGraphLinks(graph) {
-    const links = [];
-    const seen = new Set();
-    const collections = [
-        graph?._links ?? graph?.links,
-        graph?.floatingLinksInternal ?? graph?.floatingLinks,
-    ];
-
-    for (const collection of collections) {
-        for (const link of getCollectionValues(collection)) {
-            if (!link || seen.has(link)) {
-                continue;
-            }
-            seen.add(link);
-            links.push(link);
-        }
-    }
-    return links;
-}
-
-function getWorkflowGraphs(graph) {
-    const rootGraph = graph?.rootGraph || graph;
-    const graphs = new Set([rootGraph, graph].filter(Boolean));
-    const subgraphs = rootGraph?.subgraphs ?? rootGraph?._subgraphs;
-
-    for (const subgraph of getCollectionValues(subgraphs)) {
-        if (subgraph) {
-            graphs.add(subgraph);
-        }
-    }
-    return [...graphs];
-}
-
-function ensureRemapSupported() {
-    if (window.LiteGraph?.vueNodesMode) {
-        throw new Error(
-            "Node ID editing is unavailable while Nodes 2.0 is enabled. Switch to the LiteGraph renderer and try again.",
-        );
-    }
-}
-
 function getNodeLayout(node) {
     const [x = 0, y = 0] = node?.pos || [];
     const [width = 0, height = 0] = node?.size || [];
@@ -146,34 +105,6 @@ function sortNodesForReset(nodes) {
 
 const LINK_NODE_ID_FIELDS = ["origin_id", "target_id", "originId", "targetId"];
 
-function captureLinkEndpoints(links) {
-    return links.map((link) => {
-        if (Array.isArray(link)) {
-            return { link, values: [link[1], link[3]] };
-        }
-
-        const values = {};
-        for (const field of LINK_NODE_ID_FIELDS) {
-            if (field in link) {
-                values[field] = link[field];
-            }
-        }
-        return { link, values };
-    });
-}
-
-function restoreLinkEndpoints(snapshots) {
-    for (const { link, values } of snapshots) {
-        if (Array.isArray(link)) {
-            [link[1], link[3]] = values;
-            continue;
-        }
-        for (const [field, value] of Object.entries(values)) {
-            link[field] = value;
-        }
-    }
-}
-
 function remapLinkEndpoints(links, idMap) {
     for (const link of links) {
         if (Array.isArray(link)) {
@@ -200,77 +131,6 @@ function remapLinkEndpoints(links, idMap) {
     }
 }
 
-function rebuildNodeIndex(graph) {
-    const nodes = getGraphNodes(graph);
-    const index = graph?._nodes_by_id;
-
-    if (index instanceof Map) {
-        index.clear();
-        for (const node of nodes) {
-            index.set(node.id, node);
-        }
-        return;
-    }
-
-    const nextIndex = Object.fromEntries(nodes.map((node) => [node.id, node]));
-    if (!index || typeof index !== "object") {
-        graph._nodes_by_id = nextIndex;
-        return;
-    }
-
-    for (const key of Object.keys(index)) {
-        delete index[key];
-    }
-    Object.assign(index, nextIndex);
-}
-
-function getGraphCanvases(graph) {
-    return new Set([
-        app.canvas?.graph === graph ? app.canvas : null,
-        ...(graph?.list_of_graphcanvas || []),
-    ].filter(Boolean));
-}
-
-function rebuildCanvasSelectionIndexes(graph) {
-    const graphNodes = new Set(getGraphNodes(graph));
-
-    for (const canvas of getGraphCanvases(graph)) {
-        const selectedNodes = new Set();
-        const selectedIndexValues = canvas.selected_nodes instanceof Map
-            ? canvas.selected_nodes.values()
-            : Object.values(canvas.selected_nodes || {});
-        for (const node of selectedIndexValues) {
-            if (graphNodes.has(node)) {
-                selectedNodes.add(node);
-            }
-        }
-        if (canvas.selectedItems instanceof Set) {
-            for (const item of canvas.selectedItems) {
-                if (graphNodes.has(item)) {
-                    selectedNodes.add(item);
-                }
-            }
-        }
-
-        if (canvas.selected_nodes instanceof Map) {
-            canvas.selected_nodes.clear();
-            for (const node of selectedNodes) {
-                canvas.selected_nodes.set(node.id, node);
-            }
-            continue;
-        }
-
-        const index = canvas.selected_nodes || {};
-        for (const key of Object.keys(index)) {
-            delete index[key];
-        }
-        for (const node of selectedNodes) {
-            index[node.id] = node;
-        }
-        canvas.selected_nodes = index;
-    }
-}
-
 function parseNumericRuntimeNodeId(id) {
     const text = nodeIdKey(id);
     if (!/^(0|[1-9]\d*)$/.test(text)) {
@@ -280,44 +140,87 @@ function parseNumericRuntimeNodeId(id) {
     return Number.isSafeInteger(number) && `${number}` === text ? number : null;
 }
 
-function getLastNodeIdSnapshot(graph) {
-    const rootGraph = graph?.rootGraph || graph;
-    if (rootGraph?.state && "lastNodeId" in rootGraph.state) {
-        return { owner: rootGraph.state, property: "lastNodeId", value: rootGraph.state.lastNodeId };
-    }
-    if (rootGraph && "last_node_id" in rootGraph) {
-        return { owner: rootGraph, property: "last_node_id", value: rootGraph.last_node_id };
-    }
-    return null;
-}
-
-function updateWorkflowLastNodeId(graph) {
-    const snapshot = getLastNodeIdSnapshot(graph);
-    if (!snapshot) {
-        return;
-    }
-
+function updateSerializedLastNodeId(graphData) {
     let lastNodeId = 0;
-    for (const workflowGraph of getWorkflowGraphs(graph)) {
-        for (const node of getGraphNodes(workflowGraph)) {
-            const numericId = parseNumericRuntimeNodeId(node.id);
-            if (numericId !== null) {
-                lastNodeId = Math.max(lastNodeId, numericId);
-            }
+    for (const node of graphData.nodes || []) {
+        const numericId = parseNumericRuntimeNodeId(node.id);
+        if (numericId !== null) {
+            lastNodeId = Math.max(lastNodeId, numericId);
         }
     }
-    snapshot.owner[snapshot.property] = lastNodeId;
+    if (graphData.state && "lastNodeId" in graphData.state) {
+        graphData.state.lastNodeId = lastNodeId;
+    }
+    if ("last_node_id" in graphData) {
+        graphData.last_node_id = lastNodeId;
+    }
 }
 
-function rebindNodeWidgets(nodes) {
-    for (const node of nodes) {
-        try {
-            for (const widget of node.widgets || []) {
-                widget?.setNodeId?.(node.id);
-            }
-        } catch (error) {
-            console.warn(`[IAT] failed to rebind widgets for node ${node.id}`, error);
+function findSerializedGraph(workflow, graph) {
+    const rootGraph = graph?.rootGraph || graph;
+    if (graph === rootGraph) {
+        return workflow;
+    }
+
+    const pending = [...getCollectionValues(workflow?.definitions?.subgraphs)];
+    while (pending.length) {
+        const candidate = pending.shift();
+        if (nodeIdKey(candidate?.id) === nodeIdKey(graph?.id)) {
+            return candidate;
         }
+        pending.push(...getCollectionValues(candidate?.definitions?.subgraphs));
+    }
+    throw new Error("The active subgraph could not be found in the serialized workflow.");
+}
+
+function remapSerializedGraph(graphData, changes) {
+    const idMap = new Map(changes.map(({ previousId, nextId }) => [nodeIdKey(previousId), nextId]));
+    for (const node of graphData.nodes || []) {
+        const nextId = idMap.get(nodeIdKey(node.id));
+        if (nextId !== undefined) {
+            node.id = nextId;
+        }
+    }
+    for (const links of [graphData.links, graphData.floatingLinks]) {
+        remapLinkEndpoints(getCollectionValues(links), idMap);
+    }
+    for (const field of ["inputNode", "outputNode"]) {
+        const nextId = idMap.get(nodeIdKey(graphData[field]));
+        if (nextId !== undefined) {
+            graphData[field] = nextId;
+        }
+    }
+    updateSerializedLastNodeId(graphData);
+}
+
+async function reloadRemappedWorkflow(graph, changes) {
+    const rootGraph = graph?.rootGraph || graph;
+    if (typeof rootGraph?.serialize !== "function" || typeof app.loadGraphData !== "function") {
+        throw new Error("This ComfyUI version cannot safely reload a remapped workflow.");
+    }
+
+    const workflow = structuredClone(rootGraph.serialize());
+    remapSerializedGraph(findSerializedGraph(workflow, graph), changes);
+    const loaded = await app.loadGraphData(workflow, false, false);
+    if (loaded === false) {
+        throw new Error("ComfyUI rejected the remapped workflow.");
+    }
+
+    const reloadedRoot = app.rootGraph || app.graph;
+    const reloadedGraph = graph === rootGraph
+        ? reloadedRoot
+        : [...getCollectionValues(reloadedRoot?.subgraphs ?? reloadedRoot?._subgraphs)]
+            .find((candidate) => nodeIdKey(candidate?.id) === nodeIdKey(graph.id));
+    if (!reloadedGraph) {
+        throw new Error("ComfyUI reloaded the workflow without the active graph.");
+    }
+    for (const { nextId } of changes) {
+        if (!getGraphNodes(reloadedGraph).some((node) => nodeIdKey(node.id) === nodeIdKey(nextId))) {
+            throw new Error(`ComfyUI reloaded the workflow without node ID ${nextId}.`);
+        }
+    }
+    if (app.canvas?.graph !== reloadedGraph) {
+        app.canvas?.setGraph?.(reloadedGraph);
     }
 }
 
@@ -346,70 +249,25 @@ function validateRemap(graph, assignments) {
         return { node, previousId: node.id, nextId: runtimeId };
     });
 
-    for (const workflowGraph of getWorkflowGraphs(graph)) {
-        for (const node of getGraphNodes(workflowGraph)) {
-            if (!plannedNodes.has(node) && targetIds.has(nodeIdKey(node.id))) {
-                throw new Error(`Node ID ${node.id} is already in use.`);
-            }
+    for (const node of getGraphNodes(graph)) {
+        if (!plannedNodes.has(node) && targetIds.has(nodeIdKey(node.id))) {
+            throw new Error(`Node ID ${node.id} is already in use.`);
         }
     }
 
     return planned.filter(({ previousId, nextId }) => nodeIdKey(previousId) !== nodeIdKey(nextId));
 }
 
-function remapNodeIds(graph, assignments) {
-    ensureRemapSupported();
+async function remapNodeIds(graph, assignments) {
     const changes = validateRemap(graph, assignments);
     if (!changes.length) {
         return 0;
     }
-
-    const nodes = getGraphNodes(graph);
-    const nodeSnapshots = changes.map(({ node, previousId }) => ({ node, previousId }));
-    const links = getMutableGraphLinks(graph);
-    const linkSnapshots = captureLinkEndpoints(links);
-    const lastNodeIdSnapshot = getLastNodeIdSnapshot(graph);
-    const idMap = new Map(changes.map(({ previousId, nextId }) => [nodeIdKey(previousId), nextId]));
-
-    graph.beforeChange?.();
-    try {
-        for (const { node, nextId } of changes) {
-            node.id = nextId;
-        }
-        rebuildNodeIndex(graph);
-        remapLinkEndpoints(links, idMap);
-        rebuildCanvasSelectionIndexes(graph);
-        updateWorkflowLastNodeId(graph);
-    } catch (error) {
-        for (const { node, previousId } of nodeSnapshots) {
-            node.id = previousId;
-        }
-        restoreLinkEndpoints(linkSnapshots);
-        rebuildNodeIndex(graph);
-        rebuildCanvasSelectionIndexes(graph);
-        if (lastNodeIdSnapshot) {
-            lastNodeIdSnapshot.owner[lastNodeIdSnapshot.property] = lastNodeIdSnapshot.value;
-        }
-        throw error;
-    } finally {
-        graph.afterChange?.();
-    }
-
-    const changedNodes = new Set(changes.map(({ node }) => node));
-    rebindNodeWidgets(changedNodes);
-    graph.change?.();
-    for (const canvas of getGraphCanvases(graph)) {
-        canvas.setDirty?.(true, true);
-    }
-    for (const node of nodes) {
-        if (changedNodes.has(node)) {
-            node.setDirtyCanvas?.(true, true);
-        }
-    }
+    await reloadRemappedWorkflow(graph, changes);
     return changes.length;
 }
 
-function resetGraphNodeIds(graph) {
+async function resetGraphNodeIds(graph) {
     const nodes = getGraphNodes(graph);
     if (!nodes.length) {
         return {
@@ -419,7 +277,7 @@ function resetGraphNodeIds(graph) {
     }
 
     const orderedNodes = sortNodesForReset(nodes);
-    const changed = remapNodeIds(
+    const changed = await remapNodeIds(
         graph,
         orderedNodes.map((node, index) => ({ node, nextId: index + 1 })),
     );
@@ -429,9 +287,9 @@ function resetGraphNodeIds(graph) {
     };
 }
 
-function setNodeId(node, nextId) {
+async function setNodeId(node, nextId) {
     const graph = node?.graph;
-    return remapNodeIds(graph, [{ node, nextId }]) > 0;
+    return await remapNodeIds(graph, [{ node, nextId }]) > 0;
 }
 
 function promptForNodeId(node) {
@@ -470,18 +328,18 @@ app.registerExtension({
         return [
             {
                 content: "Reset graph node IDs...",
-                callback: () => {
+                callback: async () => {
                     if (!confirmResetGraphNodeIds(totalNodes)) {
                         return;
                     }
 
                     try {
-                        const result = resetGraphNodeIds(graph);
+                        const result = await resetGraphNodeIds(graph);
                         if (!result.changed) {
                             showToast("info", `Current graph already uses IDs 1-${result.total} in the default order.`);
                             return;
                         }
-                        showToast("success", `Reassigned ${result.changed} node IDs in ${result.total} nodes. Refresh the page if badges still show old IDs.`);
+                        showToast("success", `Reassigned ${result.changed} node IDs in ${result.total} nodes.`);
                     } catch (error) {
                         const detail = error?.message || "Failed to reset graph node IDs.";
                         showToast("error", detail);
@@ -500,7 +358,7 @@ app.registerExtension({
         return [
             {
                 content: "Set node ID...",
-                callback: () => {
+                callback: async () => {
                     const rawValue = promptForNodeId(node);
                     if (rawValue === null) {
                         return;
@@ -509,12 +367,12 @@ app.registerExtension({
                     const previousId = node.id;
                     try {
                         const nextId = parseNodeId(rawValue);
-                        const updated = setNodeId(node, nextId);
+                        const updated = await setNodeId(node, nextId);
                         if (!updated) {
                             showToast("info", `Node already uses ID ${nextId}.`);
                             return;
                         }
-                        showToast("success", `Updated node ID from ${previousId} to ${nextId}. Refresh the page if the badge still shows the old ID.`);
+                        showToast("success", `Updated node ID from ${previousId} to ${nextId}.`);
                     } catch (error) {
                         const detail = error?.message || "Failed to update node ID.";
                         showToast("error", detail);
